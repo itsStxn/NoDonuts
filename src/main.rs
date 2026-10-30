@@ -4,13 +4,13 @@
 //! every target in the package (including this binary), so the crate root needs
 //! its own `//!` doc comment to satisfy `missing_docs`.
 
-// This program is exported as a binary named `amzn-no-donuts`.
+// This program is exported as a binary named `nodonuts`.
 //
 // You can run it via Brazil:
 //
 // ```console
 // $ brazil-build # needed once
-// $ brazil-runtime-exec amzn-no-donuts
+// $ brazil-runtime-exec nodonuts
 // ```
 
 use amzn_no_donuts::hello;

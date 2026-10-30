@@ -97,6 +97,12 @@ publish = false
 # private Brazil package files to dependents.
 exclude = ['/build', '/Config', '/build-tools/']
 
+# Name the CLI binary `nodonuts` rather than defaulting to the package name
+# (`amzn-no-donuts`). The library crate keeps its name, `amzn_no_donuts`.
+[[bin]]
+name = "nodonuts"
+path = "src/main.rs"
+
 [lints.rust]
 missing_docs = "warn"
 missing_debug_implementations = "warn"
