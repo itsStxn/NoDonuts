@@ -1,0 +1,87 @@
+package.NoDonuts = {
+    interfaces = (0.1);
+
+    # CargoBrazil's documentation provides lots of information about customizing
+    # the build.
+    #
+    #    https://docs.hub.amazon.dev/languages/rust/cargobrazil/#customizing-your-build
+    #
+    # cargo-brazil-build provides a reasonable default build script for most
+    # use-cases. You can override specific portions of while keeping the rest using phase overrides.
+    #
+    #   https://docs.hub.amazon.dev/languages/rust/cargobrazil-extend/#override-phases-within-the-build
+    #
+    # If you need something more custom, create an executable file
+    # within build-tools/bin and implement your logic there.
+    #
+    #    $EDITOR build-tools/bin/cargo-brazil-custom-build
+    #    chmod +x build-tools/bin/cargo-brazil-custom-build
+    #
+    # For more guidance on custom build scripts, see the CargoBrazil documentation.
+    #
+    #    https://docs.hub.amazon.dev/languages/rust/cargobrazil-extend/#write-your-own-build-script
+    #
+    # The recommended strategy is to invoke cargo-brazil-build-upstream, with your
+    # own steps surrounding it. CargoBrazilExample shows this strategy in action.
+    #
+    # An alternative strategy is to re-write the default build script by copying
+    # it from CargoBrazil and adapting it as needed. When implementing this
+    # strategy, note that `cargo brazil publish` is necessary to make the package's
+    # crate(s) available to dependants.
+    build-system = cargo-brazil-build;
+
+    build-tools = {
+        0.1 = {
+            CargoBrazil = 1.0;
+            RustLang1x = 1.x;
+
+            # Grcov enables test coverage analysis
+            Grcov = 0.8.x;
+
+            # Cargo-nextest is a test runner with faster test executions.
+            # See https://nexte.st/ and the CargoBrazil documentation:
+            # https://docs.hub.amazon.dev/languages/rust/cargobrazil/#leverage-cargo-nextest-a-test-runner-with-better-performance
+            # Note: on platforms that can't use the Brazil artifact directly
+            # (e.g. macOS) you'll need to `cargo install cargo-nextest` manually.
+            Cargo-nextest = 0.x;
+
+            # Mold is a highly parallelized linker, often quicker for debug builds.
+            # See https://github.com/rui314/mold and the CargoBrazil documentation:
+            # https://docs.hub.amazon.dev/languages/rust/cargobrazil/#leverage-the-mold-linker-a-highly-parallelized-linker
+            # Caveat: only supported on platforms with Mold release artifacts (the
+            # officially supported Brazil platforms). macOS is NOT supported; if
+            # you build locally on a Mac, comment this line out.
+            Mold = 2.x;
+
+            # Dependency auditing (CVE scanning) is NOT enabled here. The
+            # recommended pattern is a SEPARATE wrapper-audit package
+            # (build-system = cargo-brazil-eevee-audit) that depends on this one,
+            # so CargoEevee's dependency closure stays out of your version set.
+            # See https://docs.hub.amazon.dev/languages/rust/howto-auditing-dependencies/#third-party-package-audit
+
+            # For more on opt-in features, see
+            # https://docs.hub.amazon.dev/languages/rust/cargobrazil/#customizing-your-build
+        };
+    };
+
+    dependencies = {
+        0.1 = {
+            # If you depend on internal Rust packages, they go here.
+            # Note that they must _also_ be declared in your Cargo.toml.
+            #
+            # For example:
+            #
+            # This package implements publishing QueryLog metrics.
+            # For more information, see: https://docs.hub.amazon.dev/languages/rust/howto-metrics/
+            # Rust-MetricWriter = 0.1;
+        };
+    };
+
+    # To use this package as a library, remove the comments below to create a
+    # targets section that exports it.
+    # targets = {
+    #    NoDonuts-0.1 = {
+    #        type = rust;
+    #    };
+    # };
+};

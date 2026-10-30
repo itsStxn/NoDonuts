@@ -1,0 +1,45 @@
+'brazil_task_configuration_schema@1.0'
+
+// Flexible Build Tasks (FBT): split this package's fleet build into independent
+// tasks that Brazil runs in parallel, then merges into one package output.
+//
+//   https://docs.hub.amazon.dev/languages/rust/cargobrazil-flexible-build-tasks/
+//
+// How it works:
+//   - Each task's `arguments` names a `brazil-build` target, and that target
+//     decides which phases run. The task `name` is just a free-form label.
+//   - Every task starts with `configure` + `fetch` (each runs in its own
+//     container), so FBT pays off only once a build has enough parallelizable
+//     work to outweigh repeating those. On a small package the serial build is
+//     already fast -- trim or delete tasks below if the split does not make your
+//     build faster (verify with a dry-run build).
+//   - Brazil reads this file FROM THE COMMIT before the build runs, so an
+//     uncommitted or untracked file has no effect on the fleet. Locally,
+//     `brazil-build` still runs the full serial build as usual.
+//
+// Edit freely: adjust `timeout_in_minutes`, rename tasks, or add/remove tasks.
+// Keep task outputs disjoint (do not give two tasks the same target, and do not
+// use `["release"]`) or the merge fails with a path conflict.
+//
+// To disable FBT entirely, delete this file and commit the deletion.
+
+// Combine the parallel tasks' outputs into one result; fail on any path conflict.
+task::merge_and_then_fail_on_path_conflict::{}
+
+task:: {
+    name: 'lint',
+    timeout_in_minutes: 10,
+    arguments: ["lint"],
+}
+
+task:: {
+    name: 'test',
+    timeout_in_minutes: 45,
+    arguments: ["test"],
+}
+
+task:: {
+    name: 'publish',
+    timeout_in_minutes: 40,
+    arguments: ["build"],
+}

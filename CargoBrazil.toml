@@ -1,0 +1,33 @@
+# CargoBrazil.toml: declarative configuration for the CargoBrazil build.
+#   https://docs.hub.amazon.dev/languages/rust/cargobrazil-extend/#declarative-configuration
+
+[lint]
+# Report `cargo fmt` violations as lint entries in LinterReport, so formatting
+# issues show up as inline comments in code reviews.
+format-errors-as-lint-errors = true
+
+# Base (applies on the build fleet): emit warnings but do NOT fail the build on
+# them. Denying *all* warnings on the fleet is a trap for a shared standard: a
+# future rustc toolchain upgrade introduces new lints that fire on old code and
+# would break every downstream package's release build on a bump they didn't ask
+# for. NOTE: `warnings` is a lint-level flag (`-W warnings`), not `--cap-lints`,
+# so the explicit per-lint `deny`s in Cargo.toml's [lints] (e.g. unsafe_code)
+# still hard-fail everywhere, including the fleet. Only *un-leveled* stray
+# warnings are relaxed here.
+warnings = "warn"
+
+[lint.local]
+# Local + ToD/CI builds: treat warnings as hard errors for fast, strict feedback
+# while iterating. Toolchain upgrades are a deliberate local action here, so the
+# fleet-upgrade trap above does not apply.
+warnings = "deny"
+# Consider auto-applying Clippy's suggested fixes on local builds
+# (https://issues.amazon.com/issues/CargoBrazil-606). It is intentionally NOT
+# enabled here: `cargo clippy --fix` refuses to run without a VCS, and this
+# template is validated inside a VCS-less build workspace, so enabling it would
+# break the template build. Turn it on in your own package, which has a git repo.
+# `cargo fix` also refuses to touch a dirty or staged tree, so enable allow-dirty
+# and allow-staged too, or a normal mid-change local build will be blocked:
+# fix = true
+# allow-dirty = true
+# allow-staged = true

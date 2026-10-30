@@ -1,0 +1,14 @@
+# clippy.toml: configuration for specific Clippy lints.
+#
+# This file configures lints; it does NOT set lint *levels*. Levels live in the
+# `[lints]` table of Cargo.toml.
+#
+# Holding a tracing span guard across an `.await` marks the span active on the
+# thread, so once the task yields, OTHER tasks' work is recorded under our span.
+# The `clippy::await_holding_invalid_types` lint (set to "deny" in Cargo.toml)
+# fires on the types below so the build catches it. Use `.instrument()` instead.
+# See https://docs.hub.amazon.dev/languages/rust/howto-logging-with-tracing/
+await-holding-invalid-types = [
+    { path = "tracing::span::Entered", reason = "holding a span guard across an await misattributes other tasks' work to this span; use .instrument() instead" },
+    { path = "tracing::span::EnteredSpan", reason = "holding a span guard across an await misattributes other tasks' work to this span; use .instrument() instead" },
+]
