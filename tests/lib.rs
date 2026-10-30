@@ -1,12 +1,27 @@
-// Integration tests test your crate's public API. They only have access to items
-// in your crate that are marked pub. See the Cargo Targets page of the Cargo Book
-// for more information.
-//
-//   https://doc.rust-lang.org/cargo/reference/cargo-targets.html#integration-tests
-//
-#[test]
-fn integration_test() {
-    use amzn_no_donuts::hello;
+//! Integration tests use only the crate's public API, the way `main.rs` does.
+//!
+//!   <https://doc.rust-lang.org/cargo/reference/cargo-targets.html#integration-tests>
 
-    assert_eq!(hello("Brazil"), "Hello new friend: Brazil");
+use amzn_no_donuts::presence::{self, Rules, State, Tracker};
+use std::time::{Duration, SystemTime};
+
+#[test]
+fn a_full_absence_cycle() {
+    let rules = Rules::new(10, 500);
+    let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let mut tracker = Tracker::new();
+    let mut fired = 0;
+
+    // Seen for 5 s, gone for 20 s, back for 5 s.
+    for tenth in 0..60 {
+        let now = start + Duration::from_millis(tenth * 500);
+        let seen = !(10..50).contains(&tenth);
+        let (next, fire) = presence::next(tracker, seen, now, &rules);
+        tracker = next;
+        if fire {
+            fired += 1;
+        }
+    }
+    assert_eq!(fired, 1);
+    assert_eq!(tracker.state, State::Present);
 }

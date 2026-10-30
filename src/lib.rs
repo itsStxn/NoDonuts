@@ -1,45 +1,27 @@
-//! One-sentence summary of your crate.
+//! NoDonuts watches the laptop camera for its owner's face, and runs an
+//! owner-defined bash command when the owner has been away for a while.
 //!
-//! Followed by more detailed Markdown documentation of your crate.
+//! Lint levels for this crate live in the `[lints]` table of `Cargo.toml`.
 //!
-//! Lint levels for this crate live in the `[lints]` table of `Cargo.toml`
-//! (a single source of truth across all targets), not in a `#![warn(...)]`
-//! attribute here.
+//! How the pieces fit together:
+//!
+//! ```text
+//! start -> spawn self as hidden `watch` -> write PID file
+//! watch loop (every check_every_ms):
+//!   camera frame -> YuNet finds faces -> SFace embeds each face
+//!   -> cosine similarity vs saved owner embedding -> owner_seen: bool
+//!   -> presence state machine -> maybe run the command
+//! stop -> read PID file -> SIGTERM -> watcher exits cleanly
+//! ```
 
-// Third-party dependencies are available once they're specified within Cargo.toml.
-#[allow(unused_imports)]
-use serde::Serialize;
-// First-party dependencies are also available once they're specified within Cargo.toml (and your Config).
-// use amzn_metrics::unit_of_work::metrics;
-// use amzn_metric_writer::Entry;
-
-/// Generates a personalized greeting.
-///
-/// # Example
-///
-/// ```
-/// use amzn_no_donuts::hello;
-///
-/// let greeting = hello("Doc-tests");
-/// println!("{}", greeting);
-/// ```
-pub fn hello(name: &str) -> String {
-    format!("Hello new friend: {name}")
-}
-
-// An example unit test testing nothing in particular.
-//
-// Unit tests have access to private types, methods, and fields. The Rust
-// Book provides more details:
-//
-//   https://doc.rust-lang.org/book/ch11-03-test-organization.html#unit-tests
-//
-#[cfg(test)]
-mod tests {
-    use super::hello;
-
-    #[test]
-    fn unit_test() {
-        assert_eq!(hello("Brazil"), "Hello new friend: Brazil");
-    }
-}
+// Each `pub mod` line pulls in the file `src/<name>.rs`.
+pub mod camera;
+pub mod cli;
+pub mod config;
+pub mod daemon;
+pub mod enroll;
+pub mod face;
+pub mod files;
+pub mod presence;
+pub mod runner;
+pub mod watcher;

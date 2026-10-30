@@ -142,7 +142,18 @@ await_holding_refcell_ref = "deny"
 #
 # _Note:_ if you create a custom build script, it must include a `cargo brazil fetch`
 # step to access dependencies listed here.
-serde = "1"
+anyhow = "1.0.89"
+clap = { version = "4.5.20", features = ["derive"] }
+directories = "5.0.1"
+image = { version = "0.25.2", default-features = false }
+log = "0.4.22"
+nix = { version = "0.29.0", features = ["signal", "process", "fs", "user"] }
+nokhwa = { version = "0.10.5", features = ["input-native"] }
+serde = { version = "1.0.210", features = ["derive"] }
+signal-hook = "0.3.17"
+simplelog = "0.12.2"
+toml = "0.8.19"
+tract-onnx = "0.21.7"
 
 # You can find more useful libraries at
 #   https://docs.hub.amazon.dev/languages/rust/rust-libraries/
