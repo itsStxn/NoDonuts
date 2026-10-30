@@ -20,3 +20,6 @@ target/
 # Ignore .cargo directory except config.toml
 .cargo/*
 !.cargo/config.toml
+
+# Ignore prompts
+prompts/
