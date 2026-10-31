@@ -49,7 +49,7 @@ impl Sighting {
     };
 }
 
-/// The state plus the little memory needed to notice sleep/wake.
+/// The state plus the little memory needed between checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tracker {
     /// Current state.
@@ -57,6 +57,9 @@ pub struct Tracker {
     /// The last moment we know the laptop was awake. `None` before the
     /// first check.
     pub last_awake: Option<SystemTime>,
+    /// Aggressive mode: how many checks in a row have seen a stranger and
+    /// not the owner.
+    pub stranger_streak: u64,
 }
 
 impl Tracker {
@@ -66,6 +69,7 @@ impl Tracker {
         Tracker {
             state: State::Present,
             last_awake: None,
+            stranger_streak: 0,
         }
     }
 }
@@ -83,25 +87,40 @@ pub struct Rules {
     pub grace: Duration,
     /// A gap between checks longer than this means the laptop was asleep.
     pub wake_gap: Duration,
-    /// Aggressive mode: a stranger without the owner fires immediately,
-    /// skipping the grace period.
+    /// Aggressive mode: a stranger without the owner fires without waiting
+    /// for the grace period.
     pub aggressive: bool,
+    /// Aggressive mode: how many checks in a row must see a stranger (and
+    /// not the owner) before firing. At least 1.
+    pub aggressive_checks: u64,
 }
 
 impl Rules {
     /// Builds the rules from config values. A wake is a gap longer than 5
     /// check intervals.
-    pub fn new(grace_seconds: u64, check_every_ms: u64, aggressive: bool) -> Rules {
+    pub fn new(
+        grace_seconds: u64,
+        check_every_ms: u64,
+        aggressive: bool,
+        aggressive_checks: u64,
+    ) -> Rules {
         Rules {
             grace: Duration::from_secs(grace_seconds),
             wake_gap: Duration::from_millis(check_every_ms.saturating_mul(5)),
             aggressive,
+            aggressive_checks,
         }
     }
 
-    /// True if this sighting should fire right away (aggressive mode only).
+    /// True if this sighting counts toward the stranger streak: aggressive
+    /// mode is on, a stranger is in view, and the owner is not.
     pub fn is_intrusion(&self, seen: Sighting) -> bool {
         self.aggressive && seen.stranger && !seen.owner
+    }
+
+    /// True once the stranger streak is long enough to fire.
+    pub fn intrusion_confirmed(&self, seen: Sighting, streak: u64) -> bool {
+        self.is_intrusion(seen) && streak >= self.aggressive_checks
     }
 }
 
@@ -113,7 +132,8 @@ pub fn next(current: Tracker, seen: Sighting, now: SystemTime, rules: &Rules) ->
 
     // 1. Did the laptop just wake up? `Instant` would not tell us: it stops
     //    counting while the machine sleeps. The wall clock keeps going.
-    if just_woke_up(current.last_awake, now, rules.wake_gap) {
+    let woke = just_woke_up(current.last_awake, now, rules.wake_gap);
+    if woke {
         // Give the owner a full grace period after opening the lid.
         // A `Fired` state stays `Fired`: no second run for the same absence.
         if let State::Away { .. } = state {
@@ -121,14 +141,29 @@ pub fn next(current: Tracker, seen: Sighting, now: SystemTime, rules: &Rules) ->
         }
     }
 
-    // 2. The transitions. Arms are tried top to bottom; the first match wins.
+    // 2. Aggressive mode's streak. Checks on either side of a sleep are not
+    //    "in a row", so a wake starts the count over. Anything other than a
+    //    stranger without the owner (the owner, an empty frame, a camera
+    //    error) resets it to 0.
+    let previous_streak = if woke { 0 } else { current.stranger_streak };
+    let streak = if rules.is_intrusion(seen) {
+        previous_streak.saturating_add(1)
+    } else {
+        0
+    };
+
+    // 3. The transitions. Arms are tried top to bottom; the first match wins.
+    //    The grace period and aggressive mode race: whichever fires first
+    //    moves to `Fired`, and `Fired` never fires again, so the other one
+    //    is cancelled.
     let (state, fire) = match state {
         // The owner is here: always back to Present (this re-arms).
         _ if seen.owner => (State::Present, false),
         // Already fired for this absence: never fire twice.
         State::Fired => (State::Fired, false),
-        // Aggressive mode: someone else is at the laptop. No grace period.
-        _ if rules.is_intrusion(seen) => (State::Fired, true),
+        // Aggressive mode: a stranger for enough checks in a row. No grace
+        // period. Before that, a stranger is just "owner not seen" below.
+        _ if rules.intrusion_confirmed(seen, streak) => (State::Fired, true),
         State::Present => (State::Away { since: now }, false),
         State::Away { since } => {
             // `duration_since` fails if `since` is in the future. That
@@ -145,6 +180,7 @@ pub fn next(current: Tracker, seen: Sighting, now: SystemTime, rules: &Rules) ->
     let next = Tracker {
         state,
         last_awake: Some(now),
+        stranger_streak: streak,
     };
     (next, fire)
 }
@@ -178,14 +214,19 @@ mod tests {
 
     impl Sim {
         fn new() -> Sim {
-            Sim::with_aggressive(false)
+            Sim::with_rules(Rules::new(GRACE_S, CHECK_MS, false, 1))
         }
 
-        fn with_aggressive(aggressive: bool) -> Sim {
+        /// Aggressive mode on, firing after `checks` stranger checks in a row.
+        fn aggressive(checks: u64) -> Sim {
+            Sim::with_rules(Rules::new(GRACE_S, CHECK_MS, true, checks))
+        }
+
+        fn with_rules(rules: Rules) -> Sim {
             Sim {
                 tracker: Tracker::new(),
                 now: SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000),
-                rules: Rules::new(GRACE_S, CHECK_MS, aggressive),
+                rules,
                 fired: 0,
             }
         }
@@ -330,7 +371,7 @@ mod tests {
 
     #[test]
     fn aggressive_stranger_fires_immediately_from_present() {
-        let mut sim = Sim::with_aggressive(true);
+        let mut sim = Sim::aggressive(1);
         sim.run_for(5, true);
         sim.step(Sighting::STRANGER);
         assert_eq!(sim.fired, 1);
@@ -339,7 +380,7 @@ mod tests {
 
     #[test]
     fn aggressive_stranger_fires_immediately_during_grace() {
-        let mut sim = Sim::with_aggressive(true);
+        let mut sim = Sim::aggressive(1);
         sim.run_for(5, false); // owner left 5 s ago, grace still running
         assert_eq!(sim.fired, 0);
         sim.step(Sighting::STRANGER);
@@ -348,7 +389,7 @@ mod tests {
 
     #[test]
     fn aggressive_stranger_with_owner_does_not_fire() {
-        let mut sim = Sim::with_aggressive(true);
+        let mut sim = Sim::aggressive(1);
         let both = Sighting {
             owner: true,
             stranger: true,
@@ -362,13 +403,13 @@ mod tests {
 
     #[test]
     fn aggressive_fires_once_while_stranger_stays() {
-        let mut sim = Sim::with_aggressive(true);
+        let mut sim = Sim::aggressive(1);
         for _ in 0..100 {
             sim.step(Sighting::STRANGER);
         }
         assert_eq!(sim.fired, 1);
         // After a normal fire, a stranger arriving does not fire again.
-        let mut sim = Sim::with_aggressive(true);
+        let mut sim = Sim::aggressive(1);
         sim.run_for(GRACE_S + 5, false);
         sim.step(Sighting::STRANGER);
         assert_eq!(sim.fired, 1);
@@ -376,7 +417,7 @@ mod tests {
 
     #[test]
     fn aggressive_re_arms_when_owner_returns() {
-        let mut sim = Sim::with_aggressive(true);
+        let mut sim = Sim::aggressive(1);
         sim.step(Sighting::STRANGER);
         sim.step(Sighting::OWNER);
         sim.step(Sighting::STRANGER);
@@ -385,11 +426,80 @@ mod tests {
 
     #[test]
     fn aggressive_without_stranger_keeps_the_grace_period() {
-        let mut sim = Sim::with_aggressive(true);
+        let mut sim = Sim::aggressive(1);
         sim.run_for(GRACE_S - 5, false);
         assert_eq!(sim.fired, 0);
         sim.run_for(10, false);
         assert_eq!(sim.fired, 1);
+    }
+
+    #[test]
+    fn aggressive_checks_need_that_many_stranger_checks_in_a_row() {
+        let mut sim = Sim::aggressive(3);
+        sim.step(Sighting::STRANGER);
+        sim.step(Sighting::STRANGER);
+        assert_eq!(sim.fired, 0, "2 of 3 checks: not yet");
+        sim.step(Sighting::STRANGER);
+        assert_eq!(sim.fired, 1, "3rd check in a row fires");
+    }
+
+    #[test]
+    fn one_misread_frame_does_not_fire_with_two_checks() {
+        let mut sim = Sim::aggressive(2);
+        // The owner, misread as a stranger once, then recognised again.
+        for _ in 0..50 {
+            sim.step(Sighting::OWNER);
+            sim.step(Sighting::STRANGER);
+        }
+        assert_eq!(sim.fired, 0);
+    }
+
+    #[test]
+    fn anything_but_a_stranger_resets_the_streak() {
+        for interruption in [Sighting::OWNER, Sighting::NOBODY] {
+            let mut sim = Sim::aggressive(3);
+            sim.step(Sighting::STRANGER);
+            sim.step(Sighting::STRANGER);
+            sim.step(interruption);
+            sim.step(Sighting::STRANGER);
+            sim.step(Sighting::STRANGER);
+            assert_eq!(sim.fired, 0, "streak reset by {interruption:?}");
+            sim.step(Sighting::STRANGER);
+            assert_eq!(sim.fired, 1);
+        }
+    }
+
+    #[test]
+    fn a_wake_resets_the_streak() {
+        let mut sim = Sim::aggressive(2);
+        sim.step(Sighting::STRANGER);
+        sim.now += Duration::from_secs(3600); // lid closed for an hour
+        sim.see(Sighting::STRANGER);
+        assert_eq!(sim.fired, 0, "checks across a sleep are not in a row");
+        sim.step(Sighting::STRANGER);
+        assert_eq!(sim.fired, 1);
+    }
+
+    #[test]
+    fn grace_period_wins_if_it_runs_out_first() {
+        // 100 checks x 500 ms = 50 s, longer than the 30 s grace period.
+        let mut sim = Sim::aggressive(100);
+        for _ in 0..200 {
+            sim.step(Sighting::STRANGER);
+        }
+        assert_eq!(sim.fired, 1, "grace fires at 30 s; aggressive is cancelled");
+    }
+
+    #[test]
+    fn aggressive_wins_if_it_confirms_first() {
+        let mut sim = Sim::aggressive(4);
+        sim.run_for(20, false); // grace period two thirds gone
+        for _ in 0..4 {
+            sim.step(Sighting::STRANGER);
+        }
+        assert_eq!(sim.fired, 1, "fires at 22 s, before the grace period");
+        sim.run_for(GRACE_S, false);
+        assert_eq!(sim.fired, 1, "the grace period no longer fires");
     }
 
     #[test]

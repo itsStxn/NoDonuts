@@ -59,6 +59,7 @@ impl Watcher {
                 config.grace_seconds,
                 config.check_every_ms,
                 config.aggressive_mode,
+                config.aggressive_checks,
             ),
             tracker: Tracker::new(),
             last_error: None,
@@ -74,8 +75,11 @@ impl Watcher {
     pub fn tick(&mut self, now: SystemTime) -> bool {
         let seen = self.look();
         let (next, fire) = presence::next(self.tracker, seen, now, &self.rules);
-        if fire && self.rules.is_intrusion(seen) {
-            log::info!("someone else is at the laptop (aggressive mode)");
+        if fire && self.rules.intrusion_confirmed(seen, next.stranger_streak) {
+            log::info!(
+                "someone else is at the laptop for {} checks in a row (aggressive mode)",
+                next.stranger_streak
+            );
         } else if next.state != self.tracker.state {
             log::info!("{}", describe(next.state));
         }
@@ -170,11 +174,15 @@ fn watch(paths: &Paths) -> Result<()> {
     let finder = OnnxFaceFinder::load()?;
     let mut watcher = Watcher::new(Box::new(Webcam::new()), Box::new(finder), owner, &config);
     let interval = Duration::from_millis(config.check_every_ms);
+    let aggressive = if config.aggressive_mode {
+        format!("on, {} checks", config.aggressive_checks)
+    } else {
+        "off".to_string()
+    };
     log::info!(
-        "watching (grace {} s, check every {} ms, aggressive mode {})",
+        "watching (grace {} s, check every {} ms, aggressive mode {aggressive})",
         config.grace_seconds,
         config.check_every_ms,
-        if config.aggressive_mode { "on" } else { "off" }
     );
 
     while !stop.load(Ordering::Relaxed) {
@@ -381,9 +389,17 @@ mod tests {
     }
 
     #[test]
-    fn aggressive_mode_fires_instantly_on_a_stranger() {
+    fn aggressive_mode_fires_after_the_default_two_stranger_checks() {
+        // Stranger from 2 s: 1st check at 2 s, 2nd (confirming) at 3 s.
         let mut w = watcher(vec![Owner, Owner, Stranger], 30, true);
-        assert_eq!(run_seconds(&mut w, 10), vec![2]);
+        assert_eq!(run_seconds(&mut w, 10), vec![3]);
+    }
+
+    #[test]
+    fn aggressive_mode_ignores_a_single_misread_frame() {
+        let mut w = watcher(vec![Owner, Stranger, Owner], 30, true);
+        assert!(run_seconds(&mut w, 10).is_empty());
+        assert_eq!(w.state(), State::Present);
     }
 
     #[test]

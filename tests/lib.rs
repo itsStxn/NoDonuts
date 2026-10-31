@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 #[test]
 fn a_full_absence_cycle() {
-    let rules = Rules::new(10, 500, false);
+    let rules = Rules::new(10, 500, false, 2);
     let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
     let mut tracker = Tracker::new();
     let mut fired = 0;

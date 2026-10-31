@@ -61,7 +61,8 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `command` | `echo 'The owner is gone!'` | Bash command to run (see [How the command runs](#how-the-command-runs)) |
 | `match_threshold` | `0.36` | Minimum cosine similarity (0 to 1) to count a face as yours |
 | `check_every_ms` | `500` | How often the camera is checked |
-| `aggressive_mode` | `false` | `true` = run the command instantly, skipping the grace period, when another face is seen and yours is not |
+| `aggressive_mode` | `false` | `true` = run the command without waiting for the grace period when another face is seen and yours is not |
+| `aggressive_checks` | `2` | Aggressive mode fires after this many checks in a row see another face and not yours (1 or more). Counted in checks of `check_every_ms`: the default is 2 x 500 ms, about 1 s |
 | `autostart` | `false` | `true` = start the watcher automatically when you log in |
 
 ## How the command runs
@@ -98,10 +99,22 @@ nodonuts config set command 'echo "Gone at $(date +%T)!" >> ~/away.log'
   sitting with strong light behind you counts as "not seen". Brief turns are
   covered by the grace period.
 - Aggressive mode: if a face that isn't yours is in view while yours isn't,
-  the command runs at once. If you and someone else are both in view, nothing
-  happens. Camera errors never count as a stranger. Caveat: your own face at
-  a sharp angle or in poor light can score below `match_threshold` and be
-  treated as a stranger, so this mode can fire while you're at your desk.
+  for `aggressive_checks` checks in a row, the command runs without waiting
+  for the grace period.
+  - The wait depends on `check_every_ms`: it is
+    `aggressive_checks x check_every_ms`. 2 checks at 500 ms is about 1 s; the
+    same 2 checks at 2000 ms is about 4 s.
+  - "In a row" means any other check resets the count to 0: your face, an
+    empty frame, a camera error, or the laptop sleeping in between.
+  - If you and someone else are both in view, nothing happens. Camera errors
+    never count as a stranger.
+  - The grace period keeps running alongside. Whichever finishes first runs
+    the command, and the other is cancelled: the command runs once per
+    absence either way.
+  - Caveat: your own face at a sharp angle or in poor light can score below
+    `match_threshold` and look like a stranger. `aggressive_checks` is the
+    guard against this. `1` fires on a single misread frame, so keep it at 2
+    or more, and higher for destructive commands like `reboot`.
 - Autostart: `nodonuts config set autostart true` adds a login entry
   that runs `nodonuts start` (Linux: `~/.config/autostart/nodonuts.desktop`,
   macOS: `~/Library/LaunchAgents/com.amazon.nodonuts.plist`). It starts at
