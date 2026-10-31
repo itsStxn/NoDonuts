@@ -41,7 +41,8 @@ macOS lock example: `pmset displaysleepnow`.
 | `nodonuts enroll` | Captures 10 frames of your face and saves the average embedding |
 | `nodonuts start` | Starts the background watcher |
 | `nodonuts stop` | Stops it |
-| `nodonuts status` | Shows whether it is running (and its PID) |
+| `nodonuts status` | Shows whether it is running (and its PID), and whether it starts at login |
+| `nodonuts refresh` | Updates the login entry to match `autostart`, pointing at the copy you run it from |
 | `nodonuts config show` | Prints all settings |
 | `nodonuts config get <key>` | Prints one setting |
 | `nodonuts config set <key> <value>` | Validates and saves one setting |
@@ -119,10 +120,24 @@ nodonuts config set command 'echo "Gone at $(date +%T)!" >> ~/away.log'
   that runs `nodonuts start` (Linux: `~/.config/autostart/nodonuts.desktop`,
   macOS: `~/Library/LaunchAgents/com.amazon.nodonuts.plist`). It starts at
   login rather than at boot, because the camera and your lock command need
-  your desktop session. The entry points at the program you ran `config set`
-  from, so run it from the installed copy. `nodonuts stop` only stops it until
-  the next login; set `autostart false` to turn it off. Nothing
-  starts at login if no face is enrolled.
+  your desktop session. `nodonuts stop` only stops it until the next login;
+  set `autostart false` to turn it off. Nothing starts at login if no face is
+  enrolled.
+  - **The entry stores the full path of the program you ran `config set`
+    from.** If that program moves or is deleted, nothing starts at login, and
+    nothing tells you at login time, since there is no terminal. This is easy
+    to hit by setting autostart from `build/bin/` and later moving, renaming
+    or deleting the project folder. Set it from the installed copy
+    (`~/.local/bin/nodonuts`, see [INSTALLATION.md](INSTALLATION.md)) and
+    moving the project doesn't matter.
+  - `nodonuts status` shows the program the entry runs, and warns if it no
+    longer exists. To fix it, run `nodonuts refresh` from the program's new
+    location.
+  - Only `config set autostart` and `nodonuts refresh` change the entry.
+    `nodonuts start` never does, so starting a test copy from `build/bin/`
+    can't redirect autostart to it. `start` only warns when the entry is out
+    of date: missing, pointing at a deleted program, or not matching the
+    `autostart` setting after a hand edit of `config.toml`.
 - Closing the lid suspends the watcher. On wake you get a full grace period.
 - Clamshell mode (lid closed, external monitor) disables the built-in
   camera, so the command fires. Use an external camera instead.

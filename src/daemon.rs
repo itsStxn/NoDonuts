@@ -31,10 +31,12 @@ pub fn start(paths: &Paths) -> Result<()> {
     enroll::load(&paths.face_file)?;
     let config = config::load(&paths.config_file)?;
     files::create_parent_dir(&paths.log_file)?;
-    // Keep the login entry in line with the config, in case the config
-    // file was edited by hand. A failure here must not stop the watcher.
-    if let Err(error) = autostart::sync(paths, config.autostart) {
-        eprintln!("warning: could not update the login entry: {error:#}");
+    // Check the login entry, but never change it here: `start` is also run
+    // from test copies (e.g. `build/bin/`), and rewriting the entry would
+    // quietly point autostart at them. Only `config set autostart` and
+    // `refresh` change it.
+    if let Some(problem) = autostart::problem(paths, config.autostart) {
+        eprintln!("warning: {problem}. Fix: run `nodonuts refresh`.");
     }
 
     let program = std::env::current_exe().context("could not find the nodonuts program")?;
@@ -96,13 +98,32 @@ pub fn status(paths: &Paths) -> Result<()> {
         Some(pid) => println!("NoDonuts is watching (PID {pid})."),
         None => println!("NoDonuts is not running."),
     }
-    let at_login = if autostart::is_enabled(paths) {
-        "yes"
-    } else {
-        "no"
-    };
-    println!("Starts at login: {at_login}");
+    print_autostart_status(paths);
     Ok(())
+}
+
+/// The "Starts at login" line of `status`, with a warning when the login
+/// entry points at a program that is no longer there.
+fn print_autostart_status(paths: &Paths) {
+    let fix = "Fix: run `nodonuts refresh` from the copy you want started at login.";
+    match autostart::stored_program(paths) {
+        Ok(None) => println!("Starts at login: no"),
+        Ok(Some(program)) if program.is_file() => {
+            println!("Starts at login: yes ({})", program.display());
+        }
+        Ok(Some(program)) => {
+            println!("Starts at login: yes, but it will FAIL");
+            println!(
+                "  warning: the login entry runs {}, which no longer exists",
+                program.display()
+            );
+            println!("  (the program was moved or deleted). {fix}");
+        }
+        Err(error) => {
+            println!("Starts at login: unknown");
+            println!("  warning: {error:#}. {fix}");
+        }
+    }
 }
 
 /// Returns the watcher's PID if it is running. Cleans up a stale PID file

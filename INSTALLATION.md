@@ -211,6 +211,25 @@ nodonuts start
 Your enrolled face and settings live outside the binary and are kept. The
 `autostart` login entry keeps working, since the path is unchanged.
 
+### Moving the program or the project
+
+The `autostart` login entry stores the full path of the program it starts.
+Moving or deleting that program breaks it silently: nothing starts at login.
+Rebuilding or reinstalling in the same place is fine; a new path is not.
+
+- Set autostart from the installed copy in `~/.local/bin`, not from the
+  project's `build/bin/`, so moving or deleting the project folder doesn't
+  affect it.
+- After moving the program, run this from its new location to update the
+  entry:
+
+  ```bash
+  nodonuts refresh
+  ```
+
+- `nodonuts status` shows which program the entry runs, and warns if it no
+  longer exists.
+
 Re-enroll (`nodonuts enroll`) only if an update replaces the face
 recognition model (`models/sface.onnx`). Faces enrolled with one model do not
 match another.

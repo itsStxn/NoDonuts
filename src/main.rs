@@ -18,6 +18,7 @@ fn main() -> Result<()> {
         Command::Start => daemon::start(&paths),
         Command::Stop => daemon::stop(&paths),
         Command::Status => daemon::status(&paths),
+        Command::Refresh => refresh(&paths),
         Command::Watch => watcher::run(&paths),
         Command::Config { action } => run_config(&paths, action),
     }
@@ -67,6 +68,14 @@ fn apply_autostart(paths: &Paths, enabled: bool) -> Result<()> {
         None => println!("NoDonuts will not start at login."),
     }
     Ok(())
+}
+
+/// `nodonuts refresh`: rebuilds everything NoDonuts generates from the
+/// settings. Today that is only the login entry. Safe to run any time; a
+/// running watcher is not touched.
+fn refresh(paths: &Paths) -> Result<()> {
+    let config = config::load(&paths.config_file)?;
+    apply_autostart(paths, config.autostart)
 }
 
 /// A running watcher keeps the settings it started with.

@@ -39,6 +39,97 @@ pub fn is_enabled(paths: &Paths) -> bool {
     paths.autostart_file.exists()
 }
 
+/// The program the login entry will run, read back from the entry.
+/// `Ok(None)` means there is no entry (autostart is off).
+///
+/// The entry stores a full path, so it breaks silently if that program is
+/// moved or deleted. `nodonuts status` uses this to warn about it.
+pub fn stored_program(paths: &Paths) -> Result<Option<PathBuf>> {
+    let path = &paths.autostart_file;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("could not read {}", path.display()))?;
+    match program_in_entry(&text) {
+        Some(program) => Ok(Some(program)),
+        None => bail!(
+            "{} is not a login entry NoDonuts recognizes",
+            path.display()
+        ),
+    }
+}
+
+/// Checks the login entry against the `autostart` setting, without
+/// changing anything. Returns a description of what is wrong, or `None` if
+/// all is well. `nodonuts refresh` fixes any of these.
+pub fn problem(paths: &Paths, enabled: bool) -> Option<String> {
+    let entry = paths.autostart_file.display();
+    match (enabled, stored_program(paths)) {
+        (_, Err(error)) => Some(format!("{error:#}")),
+        (true, Ok(None)) => Some(format!(
+            "autostart is on, but there is no login entry ({entry})"
+        )),
+        (true, Ok(Some(program))) if !program.is_file() => Some(format!(
+            "the login entry runs {}, which no longer exists (moved or deleted)",
+            program.display()
+        )),
+        (false, Ok(Some(_))) => Some(format!(
+            "autostart is off, but a login entry still exists ({entry})"
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn program_in_entry(text: &str) -> Option<PathBuf> {
+    program_in_launch_agent(text)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn program_in_entry(text: &str) -> Option<PathBuf> {
+    program_in_desktop_entry(text)
+}
+
+/// Reads the program path back out of a Linux autostart file: undoes the
+/// escaping that [`desktop_entry`] applies to the `Exec` line.
+pub fn program_in_desktop_entry(text: &str) -> Option<PathBuf> {
+    let exec = text.lines().find_map(|line| line.strip_prefix("Exec="))?;
+    // Step 1: undo the desktop-file string escaping (`\\` -> `\`).
+    let mut value = String::new();
+    let mut chars = exec.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // `?` here: a lone trailing backslash means a broken entry.
+            value.push(chars.next()?);
+        } else {
+            value.push(c);
+        }
+    }
+    // Step 2: the program is the first argument, wrapped in double quotes,
+    // with `\` escaping the next character inside them.
+    let mut chars = value.strip_prefix('"')?.chars();
+    let mut program = String::new();
+    loop {
+        match chars.next()? {
+            '"' => break,
+            '\\' => program.push(chars.next()?),
+            c => program.push(c),
+        }
+    }
+    // Step 3: `%%` is a literal `%`.
+    Some(PathBuf::from(program.replace("%%", "%")))
+}
+
+/// Reads the program path back out of a macOS LaunchAgent: the first
+/// `<string>` after `ProgramArguments`.
+pub fn program_in_launch_agent(text: &str) -> Option<PathBuf> {
+    let after = text.split_once("<key>ProgramArguments</key>")?.1;
+    let start = after.split_once("<string>")?.1;
+    let escaped = start.split_once("</string>")?.0;
+    Some(PathBuf::from(xml_unescape(escaped)))
+}
+
 fn remove(path: &Path) -> Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -142,6 +233,16 @@ fn xml_escape(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// The reverse of [`xml_escape`]. `&amp;` goes last, so `&amp;lt;` becomes
+/// `&lt;` and not `<`.
+fn xml_unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,15 +270,58 @@ mod tests {
         assert!(agent.contains("<key>RunAtLoad</key>\n    <true/>"));
     }
 
+    /// Paths with every character the escaping has to handle.
+    const TRICKY_PATHS: [&str; 5] = [
+        "/home/me/.local/bin/nodonuts",
+        "/a b/100%/$x/nodonuts",
+        "/q\"uote/back\\slash/`tick`/nodonuts",
+        "/Users/me/R&D/<dir>/it's/nodonuts",
+        "/odd/&amp;lt;/nodonuts",
+    ];
+
+    #[test]
+    fn desktop_entry_path_round_trips() {
+        for path in TRICKY_PATHS {
+            let entry = desktop_entry(Path::new(path)).unwrap();
+            assert_eq!(
+                program_in_desktop_entry(&entry),
+                Some(PathBuf::from(path)),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn launch_agent_path_round_trips() {
+        for path in TRICKY_PATHS {
+            let agent = launch_agent(Path::new(path)).unwrap();
+            assert_eq!(
+                program_in_launch_agent(&agent),
+                Some(PathBuf::from(path)),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrecognized_entries_give_no_path() {
+        assert_eq!(program_in_desktop_entry("[Desktop Entry]\nName=x\n"), None);
+        assert_eq!(program_in_desktop_entry("Exec=nodonuts start\n"), None);
+        assert_eq!(
+            program_in_desktop_entry("Exec=\"/unterminated start\n"),
+            None
+        );
+        assert_eq!(program_in_launch_agent("<plist></plist>"), None);
+    }
+
     #[test]
     fn unsafe_paths_are_refused() {
         assert!(desktop_entry(Path::new("/tmp/evil\nExec=rm")).is_err());
         assert!(launch_agent(Path::new("/tmp/evil\n")).is_err());
     }
 
-    #[test]
-    fn sync_writes_then_removes_the_entry() {
-        let dir = std::env::temp_dir().join(format!("nodonuts-autostart-{}", std::process::id()));
+    fn temp_paths(name: &str) -> (PathBuf, Paths) {
+        let dir = std::env::temp_dir().join(format!("nodonuts-{name}-{}", std::process::id()));
         let paths = Paths {
             config_file: dir.join("config.toml"),
             face_file: dir.join("face.toml"),
@@ -185,14 +329,58 @@ mod tests {
             log_file: dir.join("log"),
             autostart_file: dir.join("autostart").join("nodonuts.desktop"),
         };
+        (dir, paths)
+    }
+
+    #[test]
+    fn problem_spots_every_mismatch() {
+        let (dir, paths) = temp_paths("problem");
+        // Off and no entry: fine. On and no entry: a problem.
+        assert_eq!(problem(&paths, false), None);
+        assert!(problem(&paths, true).unwrap().contains("no login entry"));
+
+        // On, entry pointing at an existing program: fine.
+        sync(&paths, true).unwrap();
+        assert_eq!(problem(&paths, true), None);
+        // Off but an entry remains: a problem.
+        assert!(problem(&paths, false).unwrap().contains("still exists"));
+
+        // On, entry pointing at a program that is gone: a problem.
+        let entry = desktop_entry(&dir.join("gone/nodonuts")).unwrap();
+        std::fs::write(&paths.autostart_file, entry).unwrap();
+        assert!(problem(&paths, true).unwrap().contains("no longer exists"));
+
+        // A garbled entry: a problem either way.
+        std::fs::write(&paths.autostart_file, "garbage").unwrap();
+        assert!(problem(&paths, true).is_some());
+        assert!(problem(&paths, false).is_some());
+
+        // Checking never changes anything.
+        assert_eq!(
+            std::fs::read_to_string(&paths.autostart_file).unwrap(),
+            "garbage"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sync_writes_then_removes_the_entry() {
+        let (dir, paths) = temp_paths("autostart");
         assert!(!is_enabled(&paths));
         // Disabling when nothing exists is fine.
         assert_eq!(sync(&paths, false).unwrap(), None);
 
+        assert_eq!(stored_program(&paths).unwrap(), None);
         let program = sync(&paths, true).unwrap();
         assert!(program.is_some());
         assert!(is_enabled(&paths));
         files::check_private(&paths.autostart_file).unwrap();
+        // The entry points at the program running the test.
+        assert_eq!(stored_program(&paths).unwrap(), program);
+
+        // A garbled entry is an error, not a silent "no".
+        std::fs::write(&paths.autostart_file, "garbage").unwrap();
+        assert!(stored_program(&paths).is_err());
 
         sync(&paths, false).unwrap();
         assert!(!is_enabled(&paths));
