@@ -7,7 +7,7 @@ use crate::config::{self, Config};
 use crate::enroll;
 use crate::face::{self, Embedding, FaceFinder, OnnxFaceFinder};
 use crate::files::{self, Paths};
-use crate::presence::{self, Rules, State, Tracker};
+use crate::presence::{self, Rules, Sighting, State, Tracker};
 use crate::runner;
 use anyhow::{Context, Result};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
@@ -55,7 +55,11 @@ impl Watcher {
             finder,
             owner,
             threshold: config.match_threshold,
-            rules: Rules::new(config.grace_seconds, config.check_every_ms),
+            rules: Rules::new(
+                config.grace_seconds,
+                config.check_every_ms,
+                config.aggressive_mode,
+            ),
             tracker: Tracker::new(),
             last_error: None,
         }
@@ -68,9 +72,11 @@ impl Watcher {
 
     /// One check at time `now`. Returns true if the command should run.
     pub fn tick(&mut self, now: SystemTime) -> bool {
-        let seen = self.owner_seen();
+        let seen = self.look();
         let (next, fire) = presence::next(self.tracker, seen, now, &self.rules);
-        if next.state != self.tracker.state {
+        if fire && self.rules.is_intrusion(seen) {
+            log::info!("someone else is at the laptop (aggressive mode)");
+        } else if next.state != self.tracker.state {
             log::info!("{}", describe(next.state));
         }
         self.tracker = next;
@@ -84,16 +90,21 @@ impl Watcher {
         self.tracker.last_awake = Some(now);
     }
 
-    /// Grabs a frame and checks it for the owner. Any problem (camera
-    /// error, no faces, even a panic inside a library) counts as "not
-    /// seen": failing toward running the command is the safe default.
-    fn owner_seen(&mut self) -> bool {
+    /// Grabs a frame and checks who is in it. Any problem (camera error,
+    /// even a panic inside a library) counts as "nobody seen": the grace
+    /// period then runs out, failing toward running the command. It never
+    /// counts as a stranger, so a broken camera cannot trigger aggressive
+    /// mode.
+    fn look(&mut self) -> Sighting {
         // `catch_unwind` turns a panic (a crash inside a library) into an
         // `Err` so the watcher keeps running.
-        let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<bool> {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<Sighting> {
             let frame = self.camera.grab()?;
             let faces = self.finder.find_faces(&frame)?;
-            Ok(face::is_owner(&faces, &self.owner, self.threshold))
+            Ok(Sighting {
+                owner: face::is_owner(&faces, &self.owner, self.threshold),
+                stranger: face::has_stranger(&faces, &self.owner, self.threshold),
+            })
         }));
         match result {
             Ok(Ok(seen)) => {
@@ -104,11 +115,11 @@ impl Watcher {
             }
             Ok(Err(error)) => {
                 self.log_error(format!("{error:#}"));
-                false
+                Sighting::NOBODY
             }
             Err(_) => {
                 self.log_error("internal error while checking the camera".to_string());
-                false
+                Sighting::NOBODY
             }
         }
     }
@@ -160,9 +171,10 @@ fn watch(paths: &Paths) -> Result<()> {
     let mut watcher = Watcher::new(Box::new(Webcam::new()), Box::new(finder), owner, &config);
     let interval = Duration::from_millis(config.check_every_ms);
     log::info!(
-        "watching (grace {} s, check every {} ms)",
+        "watching (grace {} s, check every {} ms, aggressive mode {})",
         config.grace_seconds,
-        config.check_every_ms
+        config.check_every_ms,
+        if config.aggressive_mode { "on" } else { "off" }
     );
 
     while !stop.load(Ordering::Relaxed) {
@@ -214,77 +226,84 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    /// Plays back a script: `Ok(true)` = frame with the owner,
-    /// `Ok(false)` = empty frame, `Err` = camera error.
+    /// What a scripted frame contains.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Scene {
+        Owner,
+        Empty,
+        Stranger,
+        OwnerAndStranger,
+        CameraError,
+    }
+    use Scene::*;
+
+    /// Plays back a script of scenes, repeating the last one forever.
     struct ScriptedCamera {
-        script: Vec<Result<bool, ()>>,
+        script: Vec<Scene>,
         position: usize,
         /// Shared with the fake finder, to tell it what is in the frame.
-        owner_in_frame: Rc<Cell<bool>>,
+        current: Rc<Cell<Scene>>,
     }
 
     impl FrameSource for ScriptedCamera {
         fn grab(&mut self) -> Result<RgbImage> {
-            let step = self.script[self.position.min(self.script.len() - 1)];
+            let scene = self.script[self.position.min(self.script.len() - 1)];
             self.position += 1;
-            match step {
-                Ok(owner) => {
-                    self.owner_in_frame.set(owner);
-                    Ok(RgbImage::new(4, 4))
-                }
-                Err(()) => bail!("camera unplugged"),
+            if scene == CameraError {
+                bail!("camera unplugged");
             }
+            self.current.set(scene);
+            Ok(RgbImage::new(4, 4))
         }
     }
 
     struct FakeFinder {
-        owner_in_frame: Rc<Cell<bool>>,
+        current: Rc<Cell<Scene>>,
     }
 
     impl FaceFinder for FakeFinder {
         fn find_faces(&self, _image: &RgbImage) -> Result<Vec<Face>> {
-            if self.owner_in_frame.get() {
-                Ok(vec![Face {
-                    area: 100.0,
-                    embedding: owner_embedding(),
-                }])
-            } else {
-                Ok(Vec::new())
-            }
+            let owner = Face {
+                area: 100.0,
+                embedding: unit_vector(0),
+            };
+            let stranger = Face {
+                area: 80.0,
+                embedding: unit_vector(1),
+            };
+            Ok(match self.current.get() {
+                Owner => vec![owner],
+                Stranger => vec![stranger],
+                OwnerAndStranger => vec![owner, stranger],
+                Empty | CameraError => Vec::new(),
+            })
         }
     }
 
-    fn owner_embedding() -> Embedding {
+    /// An embedding pointing along axis `axis`: different axes are
+    /// completely different faces.
+    fn unit_vector(axis: usize) -> Embedding {
         let mut e = vec![0.0; face::EMBEDDING_LEN];
-        e[0] = 1.0;
+        e[axis] = 1.0;
         e
     }
 
-    fn watcher(script: Vec<Result<bool, ()>>, grace_seconds: u64) -> Watcher {
-        let shared = Rc::new(Cell::new(false));
+    fn watcher(script: Vec<Scene>, grace_seconds: u64, aggressive: bool) -> Watcher {
+        let shared = Rc::new(Cell::new(Empty));
         let camera = ScriptedCamera {
             script,
             position: 0,
-            owner_in_frame: Rc::clone(&shared),
+            current: Rc::clone(&shared),
         };
-        let finder = FakeFinder {
-            owner_in_frame: shared,
-        };
-        Watcher::new(
-            Box::new(camera),
-            Box::new(finder),
-            owner_embedding(),
-            &test_config(grace_seconds),
-        )
-    }
-
-    fn test_config(grace_seconds: u64) -> Config {
-        Config {
+        let finder = FakeFinder { current: shared };
+        let config = Config {
             grace_seconds,
             check_every_ms: 1000,
+            aggressive_mode: aggressive,
             // `..` fills the remaining fields from the defaults.
             ..Config::default()
-        }
+        };
+        Watcher::new(Box::new(camera), Box::new(finder), unit_vector(0), &config)
     }
 
     /// Runs one tick per second of fake time; returns the seconds at which
@@ -304,14 +323,14 @@ mod tests {
 
     #[test]
     fn owner_present_never_fires() {
-        let mut w = watcher(vec![Ok(true)], 3);
+        let mut w = watcher(vec![Owner], 3, false);
         assert!(run_seconds(&mut w, 20).is_empty());
         assert_eq!(w.state(), State::Present);
     }
 
     #[test]
     fn camera_errors_count_as_not_seen() {
-        let mut w = watcher(vec![Ok(true), Err(())], 3);
+        let mut w = watcher(vec![Owner, CameraError], 3, false);
         // Seen at 0 s, errors from 1 s: away at 1 s, fires at 4 s.
         assert_eq!(run_seconds(&mut w, 20), vec![4]);
         assert_eq!(w.state(), State::Fired);
@@ -321,17 +340,17 @@ mod tests {
     fn camera_that_fails_then_recovers() {
         // Two failing checks (shorter than the grace period), then the
         // camera recovers and the owner is there again.
-        let mut w = watcher(vec![Ok(true), Err(()), Err(()), Ok(true)], 3);
+        let mut w = watcher(vec![Owner, CameraError, CameraError, Owner], 3, false);
         assert!(run_seconds(&mut w, 20).is_empty());
         assert_eq!(w.state(), State::Present);
     }
 
     #[test]
     fn long_camera_outage_fires_then_re_arms_on_recovery() {
-        let mut script = vec![Ok(true)];
-        script.extend(std::iter::repeat_n(Err(()), 10));
-        script.push(Ok(true));
-        let mut w = watcher(script, 3);
+        let mut script = vec![Owner];
+        script.extend(std::iter::repeat_n(CameraError, 10));
+        script.push(Owner);
+        let mut w = watcher(script, 3, false);
         assert_eq!(run_seconds(&mut w, 20), vec![4]);
         assert_eq!(w.state(), State::Present);
     }
@@ -345,14 +364,44 @@ mod tests {
             }
         }
         let finder = FakeFinder {
-            owner_in_frame: Rc::new(Cell::new(false)),
+            current: Rc::new(Cell::new(Empty)),
+        };
+        let config = Config {
+            grace_seconds: 1,
+            check_every_ms: 1000,
+            ..Config::default()
         };
         let mut w = Watcher::new(
             Box::new(PanickingCamera),
             Box::new(finder),
-            owner_embedding(),
-            &test_config(1),
+            unit_vector(0),
+            &config,
         );
         assert_eq!(run_seconds(&mut w, 5), vec![1]);
+    }
+
+    #[test]
+    fn aggressive_mode_fires_instantly_on_a_stranger() {
+        let mut w = watcher(vec![Owner, Owner, Stranger], 30, true);
+        assert_eq!(run_seconds(&mut w, 10), vec![2]);
+    }
+
+    #[test]
+    fn aggressive_mode_ignores_strangers_next_to_the_owner() {
+        let mut w = watcher(vec![OwnerAndStranger], 3, true);
+        assert!(run_seconds(&mut w, 20).is_empty());
+    }
+
+    #[test]
+    fn aggressive_mode_never_treats_camera_errors_as_strangers() {
+        // Errors still fire, but only after the normal grace period.
+        let mut w = watcher(vec![Owner, CameraError], 3, true);
+        assert_eq!(run_seconds(&mut w, 20), vec![4]);
+    }
+
+    #[test]
+    fn strangers_wait_for_the_grace_period_when_aggressive_mode_is_off() {
+        let mut w = watcher(vec![Owner, Stranger], 3, false);
+        assert_eq!(run_seconds(&mut w, 20), vec![4]);
     }
 }

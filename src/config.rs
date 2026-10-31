@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`.
-pub const KEYS: [&str; 4] = [
+pub const KEYS: [&str; 5] = [
     "grace_seconds",
     "command",
     "match_threshold",
     "check_every_ms",
+    "aggressive_mode",
 ];
 
 /// All settings. `Serialize`/`Deserialize` let `serde` convert this struct
@@ -28,6 +29,9 @@ pub struct Config {
     pub match_threshold: f64,
     /// How often to look at the camera, in milliseconds.
     pub check_every_ms: u64,
+    /// If true, run the command immediately (no grace period) when someone
+    /// other than the owner is in front of the camera and the owner is not.
+    pub aggressive_mode: bool,
 }
 
 impl Default for Config {
@@ -38,6 +42,7 @@ impl Default for Config {
             // SFace's recommended threshold for cosine similarity.
             match_threshold: 0.36,
             check_every_ms: 500,
+            aggressive_mode: false,
         }
     }
 }
@@ -68,6 +73,7 @@ impl Config {
             "command" => self.command.clone(),
             "match_threshold" => self.match_threshold.to_string(),
             "check_every_ms" => self.check_every_ms.to_string(),
+            "aggressive_mode" => self.aggressive_mode.to_string(),
             _ => bail!(unknown_key(key)),
         };
         Ok(value)
@@ -88,6 +94,7 @@ impl Config {
                     .with_context(|| format!("{key} must be a number between 0 and 1"))?
             }
             "check_every_ms" => updated.check_every_ms = parse_whole_number(key, value)?,
+            "aggressive_mode" => updated.aggressive_mode = parse_on_off(key, value)?,
             _ => bail!(unknown_key(key)),
         }
         updated.validate()?;
@@ -135,6 +142,14 @@ fn parse_whole_number(key: &str, value: &str) -> Result<u64> {
         .with_context(|| format!("{key} must be a whole number greater than 0"))
 }
 
+fn parse_on_off(key: &str, value: &str) -> Result<bool> {
+    match value.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => bail!("{key} must be true or false"),
+    }
+}
+
 fn unknown_key(key: &str) -> String {
     format!(
         "unknown setting '{key}'. Known settings: {}",
@@ -158,6 +173,10 @@ mod tests {
         config.set("command", "reboot").unwrap();
         config.set("match_threshold", "0.5").unwrap();
         config.set("check_every_ms", "250").unwrap();
+        config.set("aggressive_mode", "true").unwrap();
+        assert_eq!(config.get("aggressive_mode").unwrap(), "true");
+        config.set("aggressive_mode", "false").unwrap();
+        assert_eq!(config.get("aggressive_mode").unwrap(), "false");
         assert_eq!(config.get("grace_seconds").unwrap(), "45");
         assert_eq!(config.get("command").unwrap(), "reboot");
         assert_eq!(config.get("match_threshold").unwrap(), "0.5");
@@ -177,6 +196,9 @@ mod tests {
             ("match_threshold", "NaN"),
             ("check_every_ms", "0"),
             ("command", "   "),
+            ("aggressive_mode", "yes"),
+            ("aggressive_mode", "1"),
+            ("aggressive_mode", ""),
         ] {
             assert!(config.set(key, bad).is_err(), "{key}={bad} should fail");
         }
@@ -196,6 +218,8 @@ mod tests {
         let config = Config::from_toml("grace_seconds = 10").unwrap();
         assert_eq!(config.grace_seconds, 10);
         assert_eq!(config.command, Config::default().command);
+        // Configs written before aggressive_mode existed keep it off.
+        assert!(!config.aggressive_mode);
     }
 
     #[test]

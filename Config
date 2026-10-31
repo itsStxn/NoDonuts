@@ -53,6 +53,11 @@ package.NoDonuts = {
             # you build locally on a Mac, comment this line out.
             Mold = 2.x;
 
+            # libclang for bindgen, which v4l2-sys-mit (nokhwa -> v4l) runs at
+            # build time. Clang doesn't put libclang on the default search path;
+            # build-tools/bin/cargo-brazil-on-configure sets LIBCLANG_PATH.
+            Clang = 21.x;
+
             # Dependency auditing (CVE scanning) is NOT enabled here. The
             # recommended pattern is a SEPARATE wrapper-audit package
             # (build-system = cargo-brazil-eevee-audit) that depends on this one,

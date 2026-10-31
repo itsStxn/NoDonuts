@@ -48,6 +48,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `command` | `echo 'The owner is gone!'` | Bash command to run (`bash -c`) |
 | `match_threshold` | `0.36` | Minimum cosine similarity (0 to 1) to count a face as yours |
 | `check_every_ms` | `500` | How often the camera is checked |
+| `aggressive_mode` | `false` | `true` = run the command instantly, skipping the grace period, when another face is seen and yours is not |
 
 ## How it behaves
 
@@ -58,6 +59,11 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 - The detector needs a roughly front-facing face. Turning fully sideways or
   sitting with strong light behind you counts as "not seen". Brief turns are
   covered by the grace period.
+- Aggressive mode: if a face that isn't yours is in view while yours isn't,
+  the command runs at once. If you and someone else are both in view, nothing
+  happens. Camera errors never count as a stranger. Caveat: your own face at
+  a sharp angle or in poor light can score below `match_threshold` and be
+  treated as a stranger, so this mode can fire while you're at your desk.
 - Closing the lid suspends the watcher. On wake you get a full grace period.
 - Clamshell mode (lid closed, external monitor) disables the built-in
   camera, so the command fires. Use an external camera instead.

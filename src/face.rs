@@ -32,6 +32,13 @@ pub trait FaceFinder {
     fn find_faces(&self, image: &RgbImage) -> Result<Vec<Face>>;
 }
 
+/// Is any of these faces someone other than the owner?
+pub fn has_stranger(faces: &[Face], owner: &[f32], threshold: f64) -> bool {
+    faces
+        .iter()
+        .any(|face| f64::from(cosine_similarity(&face.embedding, owner)) < threshold)
+}
+
 /// Is any of these faces the owner?
 pub fn is_owner(faces: &[Face], owner: &[f32], threshold: f64) -> bool {
     faces
@@ -390,6 +397,16 @@ mod tests {
         assert!(is_owner(&[far.clone(), close], &owner, 0.36));
         assert!(!is_owner(&[far], &owner, 0.36));
         assert!(!is_owner(&[], &owner, 0.36));
+    }
+
+    #[test]
+    fn has_stranger_finds_non_owner_faces() {
+        let owner = vec![1.0, 0.0];
+        let close = face(vec![0.9, 0.1]);
+        let far = face(vec![0.0, 1.0]);
+        assert!(has_stranger(&[close.clone(), far], &owner, 0.36));
+        assert!(!has_stranger(&[close], &owner, 0.36));
+        assert!(!has_stranger(&[], &owner, 0.36));
     }
 
     #[test]

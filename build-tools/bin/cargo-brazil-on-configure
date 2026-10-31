@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# bindgen, run at build time by v4l2-sys-mit (nokhwa -> v4l), needs libclang.
+# The Clang build tool ships it in its runtime farm but not on the default
+# library search path, so point LIBCLANG_PATH at it. Writing it to
+# .cargo/config.toml makes it work for both brazil-build and plain cargo.
+# The path is machine-specific, so the file is generated here, not committed.
+{
+    mkdir -p .cargo
+    eval "$(brazil-path -format shell -prefix configure_path 'tool.runtimefarm')"
+
+    clang_dir=("$(configure_path 'tool.runtimefarm')"/clang-21.*)
+    # An unmatched glob stays literal; fail now rather than leave bindgen to
+    # trip over a bad path later.
+    if [ ! -d "${clang_dir[0]}" ]; then
+        echo "cannot find clang-21 in the build tool runtime farm" >&2
+        exit 1
+    fi
+
+    # force = true: Cargo's [env] does not override a variable already set in
+    # the process environment, so a stale exported LIBCLANG_PATH would win.
+    cat >.cargo/config.toml <<EOF
+[env]
+LIBCLANG_PATH = { value = "${clang_dir[0]}/lib", force = true }
+EOF
+} >&2
+
+cargo-brazil-build run-default-phase configure
