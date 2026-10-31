@@ -5,8 +5,21 @@ team. NoDonuts watches the laptop camera for your face and runs a command of
 your choice (lock the screen, suspend, anything in bash) once you've been gone
 for a while.
 
-Everything runs offline. No image ever leaves the laptop, and only a face
-embedding (128 numbers, never a photo) is stored.
+See [INSTALLATION.md](INSTALLATION.md) to build and install it on Linux or
+macOS.
+
+## Privacy: no faces are saved
+
+- **No photos or video are ever saved.** Camera frames are looked at in
+  memory and thrown away, during enrollment and while watching.
+- **What is stored is a face embedding:** 128 numbers that describe your
+  face, averaged over the enrollment frames. It is not a picture, and
+  NoDonuts has no way to turn it back into one. It is used only to answer
+  "is this the owner?".
+- **Nothing leaves the laptop.** NoDonuts makes no network connections. The
+  face models are built into the binary, so even they are not downloaded.
+- **The embedding file is private** (`0600`, readable only by you), and you can
+  delete it at any time (see [Where files live](INSTALLATION.md#where-files-live)).
 
 ## Quick start
 
@@ -45,11 +58,35 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | Key | Default | Meaning |
 |---|---|---|
 | `grace_seconds` | `30` | How long you may be away before the command runs |
-| `command` | `echo 'The owner is gone!'` | Bash command to run (`bash -c`) |
+| `command` | `echo 'The owner is gone!'` | Bash command to run (see [How the command runs](#how-the-command-runs)) |
 | `match_threshold` | `0.36` | Minimum cosine similarity (0 to 1) to count a face as yours |
 | `check_every_ms` | `500` | How often the camera is checked |
 | `aggressive_mode` | `false` | `true` = run the command instantly, skipping the grace period, when another face is seen and yours is not |
 | `autostart` | `false` | `true` = start the watcher automatically when you log in |
+
+## How the command runs
+
+NoDonuts runs your command with `bash -c "<command>"`, in the background,
+and logs its exit code and output. That is a **non-interactive** shell, so it
+does not read `~/.bashrc`, `~/.zshrc` or similar files:
+
+- **Aliases and shell functions are not available.** With
+  `alias lock='loginctl lock-session'` in your `.bashrc`, the command `lock`
+  fails with "command not found" (exit code 127 in the log). Write the full
+  command instead (`loginctl lock-session`), or put longer logic in a script
+  and call it by its path.
+- **Changes your rc files make to `PATH` or other variables do not apply.**
+  The command gets the environment `nodonuts start` was run from (or your
+  login session's, with `autostart`). Use absolute paths for anything outside
+  the standard system folders.
+
+Quoting tip: wrap the command in single quotes when you set it. Inside
+double quotes your own shell expands `$`, backticks and `!` before NoDonuts
+ever sees them:
+
+```bash
+nodonuts config set command 'echo "Gone at $(date +%T)!" >> ~/away.log'
+```
 
 ## How it behaves
 
@@ -80,18 +117,27 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 
 ## Requirements
 
-- Linux: your user must be in the `video` group (`sudo usermod -aG video $USER`).
+- Linux: camera access. The logged-in desktop user usually has it; if
+  `nodonuts enroll` cannot open the camera, join the `video` group
+  (`sudo usermod -aG video $USER`, then log out and in).
 - macOS: your terminal app needs camera permission
   (System Settings > Privacy & Security > Camera).
 
+Details for both are in [INSTALLATION.md](INSTALLATION.md#4-camera-access).
+
 ## Files and security
 
-The config holds a command that bash runs, so NoDonuts creates the config and
-the face file with `0600` permissions. It refuses to start if either is
-writable by others or not owned by you. The watcher logs to
-`~/.local/share/nodonuts/nodonuts.log` (Linux).
+The config holds a command that bash runs, so NoDonuts creates the config,
+the face file and the login entry with `0600` permissions. It refuses to
+start if the config or the face file is writable by others or not owned by
+you. The watcher logs to `~/.local/share/nodonuts/nodonuts.log` (Linux) or
+`~/Library/Application Support/nodonuts/nodonuts.log` (macOS). The full list
+of files is in [INSTALLATION.md](INSTALLATION.md#where-files-live).
 
 ## Development
+
+Building, installing the binary onto your `PATH`, updating and uninstalling
+are covered in [INSTALLATION.md](INSTALLATION.md).
 
 ```bash
 brazil-build release        # fmt, clippy (warnings denied), tests, binary
@@ -113,6 +159,7 @@ Code layout (`src/`):
 | `daemon.rs` | start / stop / status and the PID file |
 | `enroll.rs` | Enrollment and the saved face embedding |
 | `files.rs` | File locations and private-permission checks |
+| `autostart.rs` | The login entry behind the `autostart` setting |
 
 Models (`models/`) are embedded in the binary, both from
 [OpenCV Zoo](https://github.com/opencv/opencv_zoo) (Apache-2.0):
