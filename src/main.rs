@@ -4,7 +4,7 @@
 use amzn_no_donuts::cli::{Cli, Command, ConfigAction};
 use amzn_no_donuts::config::{self, Config};
 use amzn_no_donuts::files::Paths;
-use amzn_no_donuts::{daemon, enroll, watcher};
+use amzn_no_donuts::{autostart, daemon, enroll, watcher};
 use anyhow::Result;
 use clap::Parser;
 
@@ -39,13 +39,32 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
             config.set(&key, &value)?;
             config::save(&paths.config_file, &config)?;
             println!("{key} = {}", config.get(&key)?);
-            remind_if_running(paths)?;
+            if key == "autostart" {
+                // Takes effect at the next login; no restart needed.
+                apply_autostart(paths, config.autostart)?;
+            } else {
+                remind_if_running(paths)?;
+            }
         }
         ConfigAction::Reset => {
             config::save(&paths.config_file, &Config::default())?;
             println!("Settings reset to defaults.");
+            apply_autostart(paths, false)?;
             remind_if_running(paths)?;
         }
+    }
+    Ok(())
+}
+
+/// Creates or removes the login entry, and says what happened.
+fn apply_autostart(paths: &Paths, enabled: bool) -> Result<()> {
+    match autostart::sync(paths, enabled)? {
+        Some(program) => {
+            println!("NoDonuts will start when you log in.");
+            println!("  runs:  {} start", program.display());
+            println!("  entry: {}", paths.autostart_file.display());
+        }
+        None => println!("NoDonuts will not start at login."),
     }
     Ok(())
 }

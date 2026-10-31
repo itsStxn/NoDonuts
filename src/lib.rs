@@ -15,6 +15,7 @@
 //! ```
 
 // Each `pub mod` line pulls in the file `src/<name>.rs`.
+pub mod autostart;
 pub mod camera;
 pub mod cli;
 pub mod config;

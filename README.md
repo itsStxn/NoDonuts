@@ -49,6 +49,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `match_threshold` | `0.36` | Minimum cosine similarity (0 to 1) to count a face as yours |
 | `check_every_ms` | `500` | How often the camera is checked |
 | `aggressive_mode` | `false` | `true` = run the command instantly, skipping the grace period, when another face is seen and yours is not |
+| `autostart` | `false` | `true` = start the watcher automatically when you log in |
 
 ## How it behaves
 
@@ -64,6 +65,14 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
   happens. Camera errors never count as a stranger. Caveat: your own face at
   a sharp angle or in poor light can score below `match_threshold` and be
   treated as a stranger, so this mode can fire while you're at your desk.
+- Autostart: `nodonuts config set autostart true` adds a login entry
+  that runs `nodonuts start` (Linux: `~/.config/autostart/nodonuts.desktop`,
+  macOS: `~/Library/LaunchAgents/com.amazon.nodonuts.plist`). It starts at
+  login rather than at boot, because the camera and your lock command need
+  your desktop session. The entry points at the program you ran `config set`
+  from, so run it from the installed copy. `nodonuts stop` only stops it until
+  the next login; set `autostart false` to turn it off. Nothing
+  starts at login if no face is enrolled.
 - Closing the lid suspends the watcher. On wake you get a full grace period.
 - Clamshell mode (lid closed, external monitor) disables the built-in
   camera, so the command fires. Use an external camera instead.

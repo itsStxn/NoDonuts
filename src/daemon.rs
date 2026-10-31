@@ -4,6 +4,7 @@
 //! from the terminal, and writes the new process ID (PID) to a file.
 //! `stop` reads that file and asks the process to exit with `SIGTERM`.
 
+use crate::autostart;
 use crate::config;
 use crate::enroll;
 use crate::files::{self, Paths};
@@ -28,8 +29,13 @@ pub fn start(paths: &Paths) -> Result<()> {
     // Check everything the watcher needs now, so mistakes show up here
     // instead of only in the log.
     enroll::load(&paths.face_file)?;
-    config::load(&paths.config_file)?;
+    let config = config::load(&paths.config_file)?;
     files::create_parent_dir(&paths.log_file)?;
+    // Keep the login entry in line with the config, in case the config
+    // file was edited by hand. A failure here must not stop the watcher.
+    if let Err(error) = autostart::sync(paths, config.autostart) {
+        eprintln!("warning: could not update the login entry: {error:#}");
+    }
 
     let program = std::env::current_exe().context("could not find the nodonuts program")?;
     let mut child = Command::new(program)
@@ -90,6 +96,12 @@ pub fn status(paths: &Paths) -> Result<()> {
         Some(pid) => println!("NoDonuts is watching (PID {pid})."),
         None => println!("NoDonuts is not running."),
     }
+    let at_login = if autostart::is_enabled(paths) {
+        "yes"
+    } else {
+        "no"
+    };
+    println!("Starts at login: {at_login}");
     Ok(())
 }
 

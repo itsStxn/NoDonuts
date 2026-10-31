@@ -6,12 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`.
-pub const KEYS: [&str; 5] = [
+pub const KEYS: [&str; 6] = [
     "grace_seconds",
     "command",
     "match_threshold",
     "check_every_ms",
     "aggressive_mode",
+    "autostart",
 ];
 
 /// All settings. `Serialize`/`Deserialize` let `serde` convert this struct
@@ -32,6 +33,8 @@ pub struct Config {
     /// If true, run the command immediately (no grace period) when someone
     /// other than the owner is in front of the camera and the owner is not.
     pub aggressive_mode: bool,
+    /// If true, the watcher starts by itself when the owner logs in.
+    pub autostart: bool,
 }
 
 impl Default for Config {
@@ -43,6 +46,7 @@ impl Default for Config {
             match_threshold: 0.36,
             check_every_ms: 500,
             aggressive_mode: false,
+            autostart: false,
         }
     }
 }
@@ -74,6 +78,7 @@ impl Config {
             "match_threshold" => self.match_threshold.to_string(),
             "check_every_ms" => self.check_every_ms.to_string(),
             "aggressive_mode" => self.aggressive_mode.to_string(),
+            "autostart" => self.autostart.to_string(),
             _ => bail!(unknown_key(key)),
         };
         Ok(value)
@@ -95,6 +100,7 @@ impl Config {
             }
             "check_every_ms" => updated.check_every_ms = parse_whole_number(key, value)?,
             "aggressive_mode" => updated.aggressive_mode = parse_on_off(key, value)?,
+            "autostart" => updated.autostart = parse_on_off(key, value)?,
             _ => bail!(unknown_key(key)),
         }
         updated.validate()?;
@@ -177,6 +183,8 @@ mod tests {
         assert_eq!(config.get("aggressive_mode").unwrap(), "true");
         config.set("aggressive_mode", "false").unwrap();
         assert_eq!(config.get("aggressive_mode").unwrap(), "false");
+        config.set("autostart", "true").unwrap();
+        assert_eq!(config.get("autostart").unwrap(), "true");
         assert_eq!(config.get("grace_seconds").unwrap(), "45");
         assert_eq!(config.get("command").unwrap(), "reboot");
         assert_eq!(config.get("match_threshold").unwrap(), "0.5");
@@ -199,6 +207,7 @@ mod tests {
             ("aggressive_mode", "yes"),
             ("aggressive_mode", "1"),
             ("aggressive_mode", ""),
+            ("autostart", "on"),
         ] {
             assert!(config.set(key, bad).is_err(), "{key}={bad} should fail");
         }
@@ -220,6 +229,7 @@ mod tests {
         assert_eq!(config.command, Config::default().command);
         // Configs written before aggressive_mode existed keep it off.
         assert!(!config.aggressive_mode);
+        assert!(!config.autostart);
     }
 
     #[test]

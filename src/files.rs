@@ -27,6 +27,8 @@ pub struct Paths {
     pub pid_file: PathBuf,
     /// The watcher's log.
     pub log_file: PathBuf,
+    /// The login entry that starts the watcher when `autostart` is on.
+    pub autostart_file: PathBuf,
 }
 
 impl Paths {
@@ -41,11 +43,20 @@ impl Paths {
             .context("could not find your home directory")?;
         let config_dir = dirs.config_dir();
         let data_dir = dirs.data_local_dir();
+        let base = directories::BaseDirs::new().context("could not find your home directory")?;
+        // Where the OS looks for things to run at login (see `autostart`).
+        #[cfg(target_os = "macos")]
+        let autostart_file = base
+            .home_dir()
+            .join("Library/LaunchAgents/com.amazon.nodonuts.plist");
+        #[cfg(not(target_os = "macos"))]
+        let autostart_file = base.config_dir().join("autostart/nodonuts.desktop");
         Ok(Paths {
             config_file: config_dir.join("config.toml"),
             face_file: data_dir.join("owner_face.toml"),
             pid_file: data_dir.join("nodonuts.pid"),
             log_file: data_dir.join("nodonuts.log"),
+            autostart_file,
         })
     }
 }
