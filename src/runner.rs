@@ -1,8 +1,10 @@
-//! Runs the owner's bash command when they are away.
+//! Runs the owner's bash command.
 
 use anyhow::{Context, Result};
 use std::process::Command;
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 /// Runs `command` through bash, off the watch loop, and logs the result.
 ///
@@ -19,8 +21,33 @@ pub fn run(command: &str) {
     });
 }
 
+/// Runs `command` like [`run`], but waits up to `timeout` for it to finish.
+///
+/// Used just before the watcher exits: without waiting, the exit could cut
+/// the command off. The wait is capped so a slow command cannot hold up a
+/// logout or shutdown. If it is still running then, we exit anyway; the
+/// command keeps running, but its output is no longer logged.
+pub fn run_and_wait(command: &str, timeout: Duration) {
+    let command = command.to_string();
+    // A channel: the thread sends one message when the command is done.
+    let (done, finished) = mpsc::channel();
+    thread::spawn(move || {
+        if let Err(error) = run_and_log(&command) {
+            log::error!("failed to run command: {error:#}");
+        }
+        // Ignore send errors: they only mean we stopped waiting.
+        let _ = done.send(());
+    });
+    if finished.recv_timeout(timeout).is_err() {
+        log::warn!(
+            "command still running after {} s; not waiting any longer",
+            timeout.as_secs()
+        );
+    }
+}
+
 fn run_and_log(command: &str) -> Result<()> {
-    log::info!("owner is away; running command: {command}");
+    log::info!("running command: {command}");
     // `bash -c "<command>"` runs the whole string as the owner wrote it.
     let output = Command::new("bash")
         .arg("-c")

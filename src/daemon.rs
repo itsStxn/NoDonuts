@@ -18,8 +18,10 @@ use std::time::{Duration, Instant};
 
 /// How long `start` watches the new process for an early crash.
 const STARTUP_CHECK: Duration = Duration::from_secs(3);
-/// How long `stop` waits for a clean exit before forcing it.
-const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `stop` waits for a clean exit before forcing it. With
+/// `face_checkout`, the watcher may first look for the owner (~3 s) and run the
+/// command (up to 5 s).
+const STOP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// `nodonuts start`.
 pub fn start(paths: &Paths) -> Result<()> {
@@ -75,6 +77,17 @@ pub fn stop(paths: &Paths) -> Result<()> {
         println!("NoDonuts is not running.");
         return Ok(());
     };
+    // Only used for the message: the watcher decides with the settings it
+    // started with. A broken config must not prevent stopping.
+    let face_checkout = config::load(&paths.config_file)
+        .map(|config| config.face_checkout)
+        .unwrap_or(false);
+    if face_checkout {
+        println!("face_checkout is on: look at the camera...");
+    }
+
+    // Cleared first, so an old result is never reported for this stop.
+    remove_stop_result(paths);
     let target = Pid::from_raw(pid);
     signal::kill(target, Signal::SIGTERM).context("could not signal the watcher")?;
 
@@ -88,8 +101,22 @@ pub fn stop(paths: &Paths) -> Result<()> {
         println!("The watcher did not exit in time and was killed.");
     }
     remove_pid_file(paths);
-    println!("NoDonuts stopped (PID {pid}).");
+
+    let result = std::fs::read_to_string(&paths.stop_result_file).unwrap_or_default();
+    remove_stop_result(paths);
+    match result.trim() {
+        "owner" => println!("Owner recognized. NoDonuts stopped (PID {pid})."),
+        "command" => {
+            println!("Owner not recognized: your command ran, then NoDonuts stopped (PID {pid}).");
+        }
+        _ => println!("NoDonuts stopped (PID {pid})."),
+    }
     Ok(())
+}
+
+fn remove_stop_result(paths: &Paths) {
+    // Ignore errors: the file may not exist.
+    let _ = std::fs::remove_file(&paths.stop_result_file);
 }
 
 /// `nodonuts status`.

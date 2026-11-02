@@ -115,6 +115,10 @@ nodonuts start
 
 Your enrolled face and settings are kept.
 
+- Stay in front of the camera when running these: `nodonuts stop` checks for
+  your face first (`face_checkout`, on by default), and runs your command if
+  it doesn't see you. The same goes for uninstalling.
+
 - Re-enroll (`nodonuts enroll`) only if an update replaces the face model
   (`models/sface.onnx`).
 - **Moving the program:** `autostart` stores the program's full path. If you

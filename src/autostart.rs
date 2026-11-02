@@ -328,6 +328,7 @@ mod tests {
             pid_file: dir.join("pid"),
             log_file: dir.join("log"),
             autostart_file: dir.join("autostart").join("nodonuts.desktop"),
+            stop_result_file: dir.join("last_stop"),
         };
         (dir, paths)
     }

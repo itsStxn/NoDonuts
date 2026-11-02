@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`.
-pub const KEYS: [&str; 7] = [
+pub const KEYS: [&str; 8] = [
     "grace_seconds",
     "command",
     "match_threshold",
@@ -14,6 +14,7 @@ pub const KEYS: [&str; 7] = [
     "aggressive_mode",
     "aggressive_checks",
     "autostart",
+    "face_checkout",
 ];
 
 /// All settings. `Serialize`/`Deserialize` let `serde` convert this struct
@@ -40,6 +41,10 @@ pub struct Config {
     pub aggressive_checks: u64,
     /// If true, the watcher starts by itself when the owner logs in.
     pub autostart: bool,
+    /// If true, stopping the watcher (`nodonuts stop`, `kill`, `pkill`)
+    /// needs the owner's face. If the owner isn't seen, the command runs
+    /// before the watcher exits.
+    pub face_checkout: bool,
 }
 
 impl Default for Config {
@@ -54,6 +59,9 @@ impl Default for Config {
             // 2 = one misread frame of the owner is not enough to fire.
             aggressive_checks: 2,
             autostart: false,
+            // On by default: without it, anyone at the laptop can simply
+            // run `nodonuts stop` during the grace period.
+            face_checkout: true,
         }
     }
 }
@@ -90,6 +98,7 @@ impl Config {
             "aggressive_mode" => self.aggressive_mode.to_string(),
             "aggressive_checks" => self.aggressive_checks.to_string(),
             "autostart" => self.autostart.to_string(),
+            "face_checkout" => self.face_checkout.to_string(),
             _ => bail!(unknown_key(key)),
         };
         Ok(value)
@@ -118,6 +127,7 @@ impl Config {
                     .with_context(|| format!("{key} must be a whole number of 1 or more"))?
             }
             "autostart" => updated.autostart = parse_on_off(key, value)?,
+            "face_checkout" => updated.face_checkout = parse_on_off(key, value)?,
             _ => bail!(unknown_key(key)),
         }
         updated.validate()?;
@@ -204,6 +214,8 @@ mod tests {
         assert_eq!(config.get("aggressive_checks").unwrap(), "1");
         config.set("aggressive_checks", "10").unwrap();
         assert_eq!(config.get("aggressive_checks").unwrap(), "10");
+        config.set("face_checkout", "false").unwrap();
+        assert_eq!(config.get("face_checkout").unwrap(), "false");
         config.set("autostart", "true").unwrap();
         assert_eq!(config.get("autostart").unwrap(), "true");
         assert_eq!(config.get("grace_seconds").unwrap(), "45");
@@ -229,6 +241,7 @@ mod tests {
             ("aggressive_mode", "1"),
             ("aggressive_mode", ""),
             ("autostart", "on"),
+            ("face_checkout", "yes"),
             ("aggressive_checks", "0"),
             ("aggressive_checks", "-1"),
             ("aggressive_checks", "1.5"),
@@ -255,6 +268,8 @@ mod tests {
         // Configs written before aggressive_mode existed keep it off.
         assert!(!config.aggressive_mode);
         assert!(!config.autostart);
+        // ...but face_checkout is on, including for older configs.
+        assert!(config.face_checkout);
         assert_eq!(config.aggressive_checks, 2);
     }
 

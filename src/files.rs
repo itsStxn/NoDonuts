@@ -29,6 +29,9 @@ pub struct Paths {
     pub log_file: PathBuf,
     /// The login entry that starts the watcher when `autostart` is on.
     pub autostart_file: PathBuf,
+    /// Written by the watcher as it exits: how the stop went (see
+    /// `watcher::StopOutcome`), so `nodonuts stop` can report it.
+    pub stop_result_file: PathBuf,
 }
 
 impl Paths {
@@ -57,6 +60,7 @@ impl Paths {
             pid_file: data_dir.join("nodonuts.pid"),
             log_file: data_dir.join("nodonuts.log"),
             autostart_file,
+            stop_result_file: data_dir.join("last_stop"),
         })
     }
 }

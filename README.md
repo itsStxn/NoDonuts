@@ -40,7 +40,7 @@ macOS lock example: `pmset displaysleepnow`.
 |---|---|
 | `nodonuts enroll` | Captures 10 frames of your face and saves the average embedding |
 | `nodonuts start` | Starts the background watcher |
-| `nodonuts stop` | Stops it |
+| `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face) |
 | `nodonuts status` | Shows whether it is running (and its PID), and whether it starts at login |
 | `nodonuts refresh` | Updates the login entry to match `autostart`, pointing at the copy you run it from |
 | `nodonuts config show` | Prints all settings |
@@ -65,6 +65,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `aggressive_mode` | `false` | `true` = run the command without waiting for the grace period when another face is seen and yours is not |
 | `aggressive_checks` | `2` | Aggressive mode fires after this many checks in a row see another face and not yours (1 or more). Counted in checks of `check_every_ms`: the default is 2 x 500 ms, about 1 s |
 | `autostart` | `false` | `true` = start the watcher automatically when you log in |
+| `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
 
 ## How the command runs
 
@@ -138,10 +139,43 @@ nodonuts config set command 'echo "Gone at $(date +%T)!" >> ~/away.log'
     can't redirect autostart to it. `start` only warns when the entry is out
     of date: missing, pointing at a deleted program, or not matching the
     `autostart` setting after a hand edit of `config.toml`.
+- Face checkout: see [below](#face-checkout).
 - Closing the lid suspends the watcher. On wake you get a full grace period.
 - Clamshell mode (lid closed, external monitor) disables the built-in
   camera, so the command fires. Use an external camera instead.
 - No liveness check: a photo of you could fool it.
+
+## Face checkout
+
+Without it, anyone at your unlocked laptop could type `nodonuts stop` (or
+`pkill nodonuts`) during the grace period, and nothing would happen. So it's
+on by default: only your face can stop the watcher quietly. To turn it off,
+run `nodonuts config set face_checkout false`, then
+`nodonuts stop && nodonuts start` (this stop still needs your face, since the
+running watcher keeps its settings).
+
+- When the watcher is asked to stop, it looks at the camera for about 3
+  seconds.
+  - **You're seen:** it stops quietly.
+  - **You're not seen:** it runs your command (e.g. locks the screen), then
+    stops.
+- `nodonuts stop` prints "look at the camera...", then which of the two
+  happened.
+- **The watcher does the check, not `nodonuts stop`.** So `kill <pid>`, `pkill
+  nodonuts` and `pkill -<almost any signal> nodonuts` all go through it. That
+  includes signals that would normally pause it (`pkill -TSTP`). `SIGHUP`
+  (closing a terminal) is ignored, as before.
+- **What can't be blocked:** `kill -9`, `kill -STOP`, and crash signals such
+  as `kill -SEGV`. No program can catch these.
+- **It also happens on logout and shutdown.** The system asks every program
+  to stop, so if you're not in front of the camera then, your command runs.
+  Logout waits for it: the face checkout, plus up to 5 s for your command.
+- **A camera that can't see you counts as "not seen".** A covered camera, a
+  dark room, or (on Linux) a camera busy in a video call means stopping runs
+  your command. That's harmless with a lock command, but think twice with
+  something like `reboot`.
+- Applying new settings (`nodonuts stop && nodonuts start`) needs your face
+  too.
 
 ## Requirements
 
@@ -151,7 +185,7 @@ nodonuts config set command 'echo "Gone at $(date +%T)!" >> ~/away.log'
 - macOS: your terminal app needs camera permission
   (System Settings > Privacy & Security > Camera).
 
-Details for both are in [INSTALLATION.md](INSTALLATION.md#4-camera-access).
+Details for both are in [INSTALLATION.md](INSTALLATION.md#camera-access).
 
 ## Files and security
 

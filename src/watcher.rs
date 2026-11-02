@@ -10,7 +10,10 @@ use crate::files::{self, Paths};
 use crate::presence::{self, Rules, Sighting, State, Tracker};
 use crate::runner;
 use anyhow::{Context, Result};
-use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::consts::{
+    SIGABRT, SIGALRM, SIGHUP, SIGINT, SIGIO, SIGPROF, SIGQUIT, SIGTERM, SIGTSTP, SIGTTIN, SIGTTOU,
+    SIGUSR1, SIGUSR2, SIGVTALRM, SIGXCPU, SIGXFSZ,
+};
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::panic::{self, AssertUnwindSafe};
@@ -128,12 +131,87 @@ impl Watcher {
         }
     }
 
+    /// `face_checkout`: decides how a stop request ends. Looks at the camera
+    /// up to `attempts` times, `pause` apart, and stops looking as soon as
+    /// the owner is seen.
+    pub fn check_before_stop(&mut self, attempts: u32, pause: Duration) -> StopOutcome {
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                thread::sleep(pause);
+            }
+            if self.look().owner {
+                return StopOutcome::OwnerConfirmed;
+            }
+        }
+        StopOutcome::OwnerNotSeen
+    }
+
     fn log_error(&mut self, message: String) {
         if self.last_error.as_ref() != Some(&message) {
             log::warn!("{message} (counts as owner not seen)");
             self.last_error = Some(message);
         }
     }
+}
+
+/// How a stop request ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// `face_checkout` is off: stopped without looking.
+    Unchecked,
+    /// `face_checkout` is on and the owner was seen: stopped quietly.
+    OwnerConfirmed,
+    /// `face_checkout` is on and the owner was not seen: the command ran, then
+    /// the watcher stopped.
+    OwnerNotSeen,
+}
+
+impl StopOutcome {
+    /// The word written to the stop result file for `nodonuts stop`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StopOutcome::Unchecked => "unchecked",
+            StopOutcome::OwnerConfirmed => "owner",
+            StopOutcome::OwnerNotSeen => "command",
+        }
+    }
+}
+
+/// `face_checkout` looks at the camera up to 8 times, 250 ms apart. Each look
+/// also takes time (frames + face models), so this is about 3 s in total on
+/// a typical laptop. It stops early as soon as the owner is seen.
+const FACE_CHECKOUT_ATTEMPTS: u32 = 8;
+const FACE_CHECKOUT_PAUSE: Duration = Duration::from_millis(250);
+/// How long to wait for the command before exiting. Kept short so a slow
+/// command cannot hold up a logout or shutdown.
+const COMMAND_WAIT_BEFORE_EXIT: Duration = Duration::from_secs(5);
+
+/// The signals that ask the watcher to stop. `nodonuts stop` and plain
+/// `kill`/`pkill` send SIGTERM, but `pkill` can send any signal, and most of
+/// them end a program that doesn't catch them. Catching them all here means
+/// they all go through `face_checkout`.
+///
+/// What can't be caught: SIGKILL (`kill -9`) and SIGSTOP (`kill -STOP`), by
+/// design of the OS; and crash signals like SIGSEGV or SIGBUS, which are
+/// unsafe to catch.
+fn stop_signals() -> Vec<i32> {
+    let mut signals = vec![
+        SIGTERM, SIGINT, SIGQUIT, SIGUSR1, SIGUSR2, SIGALRM, SIGVTALRM, SIGPROF, SIGXCPU, SIGXFSZ,
+        SIGIO, SIGABRT,
+        // These pause a program instead of ending it, so `pkill -TSTP` would
+        // freeze the watcher like `kill -STOP`.
+        SIGTSTP, SIGTTIN, SIGTTOU,
+    ];
+    // Linux has a few more signals that end a program, including the
+    // "real-time" range (`pkill -RTMIN ...`).
+    #[cfg(target_os = "linux")]
+    {
+        use nix::sys::signal::Signal;
+        signals.push(Signal::SIGPWR as i32);
+        signals.push(Signal::SIGSTKFLT as i32);
+        signals.extend(nix::libc::SIGRTMIN()..=nix::libc::SIGRTMAX());
+    }
+    signals
 }
 
 fn describe(state: State) -> &'static str {
@@ -165,8 +243,10 @@ fn watch(paths: &Paths) -> Result<()> {
     // An `AtomicBool` is a true/false that is safe to set from a signal
     // handler and read from the loop. `Arc` lets both share it.
     let stop = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(SIGTERM, Arc::clone(&stop))?;
-    signal_hook::flag::register(SIGINT, Arc::clone(&stop))?;
+    for signal in stop_signals() {
+        signal_hook::flag::register(signal, Arc::clone(&stop))
+            .with_context(|| format!("could not catch signal {signal}"))?;
+    }
     // Closing the terminal sends SIGHUP; catching it (and ignoring the
     // flag) keeps the watcher alive.
     signal_hook::flag::register(SIGHUP, Arc::new(AtomicBool::new(false)))?;
@@ -180,9 +260,10 @@ fn watch(paths: &Paths) -> Result<()> {
         "off".to_string()
     };
     log::info!(
-        "watching (grace {} s, check every {} ms, aggressive mode {aggressive})",
+        "watching (grace {} s, check every {} ms, aggressive mode {aggressive}, face checkout {})",
         config.grace_seconds,
         config.check_every_ms,
+        if config.face_checkout { "on" } else { "off" },
     );
 
     while !stop.load(Ordering::Relaxed) {
@@ -191,6 +272,28 @@ fn watch(paths: &Paths) -> Result<()> {
         }
         watcher.mark_awake(SystemTime::now());
         sleep_unless_stopped(interval, &stop);
+    }
+
+    // A stop was requested. With `face_checkout`, only the owner's face can
+    // end the watcher quietly; otherwise the command runs first.
+    let outcome = if config.face_checkout {
+        log::info!("stop requested; checking for the owner's face");
+        watcher.check_before_stop(FACE_CHECKOUT_ATTEMPTS, FACE_CHECKOUT_PAUSE)
+    } else {
+        StopOutcome::Unchecked
+    };
+    match outcome {
+        StopOutcome::Unchecked => {}
+        StopOutcome::OwnerConfirmed => log::info!("owner recognized; stopping"),
+        StopOutcome::OwnerNotSeen => {
+            log::warn!("stop requested but the owner was not seen; running the command first");
+            runner::run_and_wait(&config.command, COMMAND_WAIT_BEFORE_EXIT);
+        }
+    }
+    // For `nodonuts stop` to report. Not being able to write it must not
+    // keep the watcher running.
+    if let Err(error) = files::write_private(&paths.stop_result_file, outcome.as_str().as_bytes()) {
+        log::warn!("could not record how the stop went: {error:#}");
     }
     log::info!("stopped");
     Ok(())
@@ -413,6 +516,66 @@ mod tests {
         // Errors still fire, but only after the normal grace period.
         let mut w = watcher(vec![Owner, CameraError], 3, true);
         assert_eq!(run_seconds(&mut w, 20), vec![4]);
+    }
+
+    #[test]
+    fn face_checkout_stops_quietly_when_the_owner_is_seen() {
+        let mut w = watcher(vec![Owner], 30, false);
+        assert_eq!(
+            w.check_before_stop(12, Duration::ZERO),
+            StopOutcome::OwnerConfirmed
+        );
+    }
+
+    #[test]
+    fn face_checkout_runs_the_command_when_the_owner_is_not_seen() {
+        for scene in [Empty, Stranger, CameraError] {
+            let mut w = watcher(vec![scene], 30, false);
+            assert_eq!(
+                w.check_before_stop(12, Duration::ZERO),
+                StopOutcome::OwnerNotSeen,
+                "{scene:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn face_checkout_waits_for_the_owner_to_look_at_the_camera() {
+        // Seen on the 3rd look, within the 12 allowed.
+        let mut w = watcher(vec![Empty, Stranger, Owner], 30, false);
+        assert_eq!(
+            w.check_before_stop(12, Duration::ZERO),
+            StopOutcome::OwnerConfirmed
+        );
+    }
+
+    #[test]
+    fn face_checkout_gives_up_after_the_allowed_looks() {
+        // Owner only on the 4th look, but only 3 are allowed.
+        let mut w = watcher(vec![Empty, Empty, Empty, Owner], 30, false);
+        assert_eq!(
+            w.check_before_stop(3, Duration::ZERO),
+            StopOutcome::OwnerNotSeen
+        );
+    }
+
+    #[test]
+    fn owner_next_to_a_stranger_counts_as_confirmed() {
+        let mut w = watcher(vec![OwnerAndStranger], 30, false);
+        assert_eq!(
+            w.check_before_stop(12, Duration::ZERO),
+            StopOutcome::OwnerConfirmed
+        );
+    }
+
+    #[test]
+    fn stop_signals_cover_the_common_ones() {
+        let signals = stop_signals();
+        for expected in [SIGTERM, SIGINT, SIGQUIT, SIGUSR1, SIGUSR2, SIGTSTP] {
+            assert!(signals.contains(&expected), "missing signal {expected}");
+        }
+        // SIGHUP is handled separately (ignored), and must not stop it.
+        assert!(!signals.contains(&SIGHUP));
     }
 
     #[test]
