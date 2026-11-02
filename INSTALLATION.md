@@ -1,256 +1,160 @@
 # Installing NoDonuts
 
-NoDonuts is a single binary: both face models are built into it, so
-installing it means copying one file onto your `PATH`. This guide covers
-building it, installing it for your user on Linux or macOS, updating it, and
-uninstalling it.
+NoDonuts is built from source and installed as a single file,
+`~/.local/bin/nodonuts`. No `sudo` needed.
 
-## 1. Build
+You need the Brazil CLI (`brazil`), which comes with Amazon Toolbox. Pick
+your system, copy the commands into a terminal, and press Enter. The source
+goes into a Brazil workspace at `~/NoDonuts`.
 
-The binary must be built for the machine that runs it: an x86_64 build does
-not run on an aarch64 (ARM) laptop, and a Linux build does not run on macOS.
-Check your machine with `uname -sm`.
-
-### Linux, with Brazil
-
-#### Get the source
-
-Create a workspace on the package's version set (`NoDonuts/development`),
-then pull the package into it:
+## Linux (Ubuntu)
 
 ```bash
+cd ~
 brazil ws create --name NoDonuts --versionSet NoDonuts/development
 cd NoDonuts
 brazil ws use --package NoDonuts
-```
-
-Pick the platform that matches the laptop you'll run NoDonuts on. The
-version set builds `AL2023_x86_64` and `AL2023_aarch64`; on Ubuntu the
-workspace otherwise defaults to `AL2_x86_64`, which the version set doesn't
-build.
-
-```bash
-uname -m                                   # x86_64 or aarch64
-brazil ws use --platform AL2023_x86_64     # or: AL2023_aarch64
-```
-
-The package source is now in `src/NoDonuts`, a git repository of its own:
-
-```bash
+brazil ws use --platform AL2023_x86_64      # ARM laptop (`uname -m` says aarch64)? Use AL2023_aarch64
 cd src/NoDonuts
-```
-
-To pick up newer changes later, from `src/NoDonuts`:
-
-```bash
-git pull
-brazil ws sync --metadata   # refreshes the version set's dependencies
-```
-
-#### Build
-
-From the package directory (`src/NoDonuts`):
-
-```bash
 brazil-build release
-```
-
-This formats, lints, runs the tests and builds the release binary. The file
-to install is:
-
-```
-build/bin/nodonuts.orig
-```
-
-Copy `nodonuts.orig`, not `build/bin/nodonuts`. The latter is a small wrapper
-script that only works inside a Brazil runtime environment.
-
-The binary matches the workspace platform you picked above. To build for the
-other architecture, switch platform and rebuild.
-
-### macOS (and Linux without Brazil)
-
-Brazil only builds Linux targets, so on macOS clone the package and use
-Cargo directly:
-
-```bash
-git clone ssh://git.amazon.com/pkg/NoDonuts
-cd NoDonuts
-```
-
-```bash
-# Rust, if you do not have it: https://rustup.rs
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# macOS needs Apple's command line tools for the camera bindings.
-xcode-select --install
-
-cargo build --release
-```
-
-The file to install is `target/release/nodonuts`.
-
-> The macOS build has not been tested yet. If it fails, please report it.
-
-## 2. Install
-
-Both platforms install into `~/.local/bin`, a per-user folder that needs no
-`sudo`.
-
-### Linux
-
-```bash
 mkdir -p ~/.local/bin
-install -m 755 build/bin/nodonuts.orig ~/.local/bin/nodonuts   # Brazil build
-# or: install -m 755 target/release/nodonuts ~/.local/bin/nodonuts
-```
-
-Ubuntu adds `~/.local/bin` to your `PATH` automatically, but only if the
-folder existed when you logged in. If `which nodonuts` prints nothing, log
-out and back in, or add it to your shell yourself:
-
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # zsh: ~/.zshrc
+install -m 755 build/bin/nodonuts.orig ~/.local/bin/nodonuts
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
+nodonuts --version
 ```
 
-### macOS
+The last line prints `nodonuts 0.1.0`. The build takes a few minutes the
+first time.
+
+Install `nodonuts.orig`, not `build/bin/nodonuts`: the latter is a wrapper
+that only works inside Brazil.
+
+## macOS
+
+First, install Apple's command line tools (skip if you already have them),
+and wait for the install window to finish:
 
 ```bash
+xcode-select --install
+```
+
+Then:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source ~/.cargo/env
+cd ~
+brazil ws create --name NoDonuts --versionSet NoDonuts/development
+cd NoDonuts
+brazil ws use --package NoDonuts
+cd src/NoDonuts
+cargo build --release
 mkdir -p ~/.local/bin
 install -m 755 target/release/nodonuts ~/.local/bin/nodonuts
-```
-
-macOS does not put `~/.local/bin` on your `PATH`. The default shell is zsh:
-
-```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
-```
-
-A binary you built yourself runs as is. If you copied it from another Mac
-(AirDrop, a download) and macOS blocks it, remove the quarantine flag:
-
-```bash
-xattr -d com.apple.quarantine ~/.local/bin/nodonuts
-```
-
-### Optional: a short alias
-
-```bash
-echo "alias nd='nodonuts'" >> ~/.bashrc   # zsh: ~/.zshrc
-```
-
-## 3. Check it works
-
-From any folder:
-
-```bash
-which nodonuts      # should print ~/.local/bin/nodonuts
 nodonuts --version
+```
+
+The last line prints `nodonuts 0.1.0`.
+
+- The `curl` line installs Rust. Skip it if you already have Rust.
+- `source ~/.cargo/env` makes `cargo` work in this terminal. New
+  terminals pick it up on their own.
+- The `PATH` line uses `$HOME` rather than `~` on purpose: `~` isn't
+  expanded inside double quotes, so `"~/.local/bin"` would not work.
+- `cd src/NoDonuts` matters: `Cargo.toml` is there, not in the workspace
+  root.
+- Brazil can't build for macOS, so the build uses Cargo.
+
+## After installing
+
+```bash
+nodonuts enroll
+nodonuts config set command 'loginctl lock-session'    # Linux: lock the screen
+nodonuts start
 nodonuts status
 ```
 
-## 4. Camera access
+On macOS, use `pmset displaysleepnow` as the command instead.
 
-### Linux
-
-On a desktop session, the logged-in user normally has camera access already.
-If `nodonuts enroll` cannot open the camera, add yourself to the `video`
-group, then log out and back in:
-
-```bash
-ls -l /dev/video0                 # the camera should be listed
-sudo usermod -aG video "$USER"
-```
-
-### macOS
-
-The first `nodonuts enroll` asks for camera permission for your terminal app
-(Terminal, iTerm2, ...). If you declined, allow it in
-System Settings > Privacy & Security > Camera, then quit and reopen the
-terminal.
-
-The watcher started by `autostart` runs without a terminal, so macOS may ask
-again, or list `nodonuts` separately in that same settings page. This has not
-been tested yet.
-
-## 5. First run
-
-```bash
-nodonuts enroll                                       # look at the camera
-nodonuts config set command 'loginctl lock-session'   # Linux: lock the screen
-# macOS: nodonuts config set command 'pmset displaysleepnow'
-nodonuts start
-```
-
-To start it automatically at every login, run this from the installed copy
-(the login entry points at the program you run it from):
+To start NoDonuts at every login:
 
 ```bash
 nodonuts config set autostart true
 ```
 
-The output shows the program the login entry will run. Check that it is
-`~/.local/bin/nodonuts`.
-
 See [README.md](README.md) for every command and setting.
 
-## 6. Update
+## Update
 
-Stop the watcher, so the old version does not keep running, then copy the
-new build over the old one:
+Linux:
 
 ```bash
+cd ~/NoDonuts/src/NoDonuts
+git pull
+brazil ws sync --metadata
+brazil-build release
 nodonuts stop
-install -m 755 build/bin/nodonuts.orig ~/.local/bin/nodonuts   # Linux, Brazil build
-# or: install -m 755 target/release/nodonuts ~/.local/bin/nodonuts
+install -m 755 build/bin/nodonuts.orig ~/.local/bin/nodonuts
 nodonuts start
 ```
 
-Your enrolled face and settings live outside the binary and are kept. The
-`autostart` login entry keeps working, since the path is unchanged.
+macOS:
 
-### Moving the program or the project
+```bash
+source ~/.cargo/env
+cd ~/NoDonuts/src/NoDonuts
+git pull
+cargo build --release
+nodonuts stop
+install -m 755 target/release/nodonuts ~/.local/bin/nodonuts
+nodonuts start
+```
 
-The `autostart` login entry stores the full path of the program it starts.
-Moving or deleting that program breaks it silently: nothing starts at login.
-Rebuilding or reinstalling in the same place is fine; a new path is not.
+Your enrolled face and settings are kept.
 
-- Set autostart from the installed copy in `~/.local/bin`, not from the
-  project's `build/bin/`, so moving or deleting the project folder doesn't
-  affect it.
-- After moving the program, run this from its new location to update the
-  entry:
+- Re-enroll (`nodonuts enroll`) only if an update replaces the face model
+  (`models/sface.onnx`).
+- **Moving the program:** `autostart` stores the program's full path. If you
+  move `nodonuts`, run `nodonuts refresh` from its new location.
+  `nodonuts status` warns when the stored path is broken.
 
-  ```bash
-  nodonuts refresh
-  ```
-
-- `nodonuts status` shows which program the entry runs, and warns if it no
-  longer exists.
-
-Re-enroll (`nodonuts enroll`) only if an update replaces the face
-recognition model (`models/sface.onnx`). Faces enrolled with one model do not
-match another.
-
-## 7. Uninstall
+## Uninstall
 
 ```bash
 nodonuts stop
-nodonuts config set autostart false   # removes the login entry
+nodonuts config set autostart false
 rm ~/.local/bin/nodonuts
 ```
 
-To also delete your settings, the enrolled face and the log:
+To also delete your settings, enrolled face and log:
 
 ```bash
-# Linux
-rm -rf ~/.config/nodonuts ~/.local/share/nodonuts
-
-# macOS
-rm -rf ~/Library/Application\ Support/nodonuts
+rm -rf ~/.config/nodonuts ~/.local/share/nodonuts         # Linux
+rm -rf ~/Library/Application\ Support/nodonuts            # macOS
 ```
+
+## Camera access
+
+- **Linux:** the logged-in desktop user usually has access. If
+  `nodonuts enroll` can't open the camera, run
+  `sudo usermod -aG video "$USER"`, then log out and back in.
+- **macOS:** the first `nodonuts enroll` asks for camera permission for your
+  terminal app. If you declined, allow it in System Settings > Privacy &
+  Security > Camera, then reopen the terminal. If the watcher started by
+  `autostart` can't use the camera, allow `nodonuts` in the same place.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `cargo: command not found` (macOS) | Run `source ~/.cargo/env` |
+| `could not find Cargo.toml` | Run `cd ~/NoDonuts/src/NoDonuts` first |
+| `brazil ws create` says the workspace exists | You already installed once. Use [Update](#update) |
+| A `brazil` command fails with an authentication error | Run `mwinit`, then try again |
+| `nodonuts: command not found` | Open a new terminal |
 
 ## Where files live
 
