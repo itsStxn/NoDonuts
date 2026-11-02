@@ -58,14 +58,14 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 
 | Key | Default | Meaning |
 |---|---|---|
-| `grace_seconds` | `30` | How long you may be away before the command runs |
-| `command` | `echo 'The owner is gone!'` | Bash command to run (see [How the command runs](#how-the-command-runs)) |
-| `match_threshold` | `0.36` | Minimum cosine similarity (0 to 1) to count a face as yours |
-| `check_every_ms` | `500` | How often the camera is checked |
-| `aggressive_mode` | `false` | `true` = run the command without waiting for the grace period when another face is seen and yours is not |
 | `aggressive_checks` | `2` | Aggressive mode fires after this many checks in a row see another face and not yours (1 or more). Counted in checks of `check_every_ms`: the default is 2 x 500 ms, about 1 s |
+| `aggressive_mode` | `false` | `true` = run the command without waiting for the grace period when another face is seen and yours is not |
 | `autostart` | `false` | `true` = start the watcher automatically when you log in |
+| `check_every_ms` | `500` | How often the camera is checked |
+| `command` | `echo 'The owner is gone!'` | Bash command to run (see [How the command runs](#how-the-command-runs)) |
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
+| `grace_seconds` | `30` | How long you may be away before the command runs |
+| `match_threshold` | `0.36` | Minimum cosine similarity (0 to 1) to count a face as yours |
 
 ## How the command runs
 

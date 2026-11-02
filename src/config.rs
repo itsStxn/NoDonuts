@@ -5,63 +5,67 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// The names accepted by `config get` and `config set`.
+/// The names accepted by `config get` and `config set`, alphabetically.
 pub const KEYS: [&str; 8] = [
-    "grace_seconds",
-    "command",
-    "match_threshold",
-    "check_every_ms",
-    "aggressive_mode",
     "aggressive_checks",
+    "aggressive_mode",
     "autostart",
+    "check_every_ms",
+    "command",
     "face_checkout",
+    "grace_seconds",
+    "match_threshold",
 ];
 
 /// All settings. `Serialize`/`Deserialize` let `serde` convert this struct
 /// to and from TOML text for us.
+///
+/// Keep the fields in alphabetical order: serde writes them in the order
+/// they're declared, so this is the order `config show` prints them in (a
+/// test checks it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 // `default`: keys missing from the file get their default value.
 // `deny_unknown_fields`: a typo like `grace_second` is an error, not ignored.
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// How long the owner may be away before the command runs.
-    pub grace_seconds: u64,
-    /// The bash command to run.
-    pub command: String,
-    /// Minimum cosine similarity (0 to 1) for a face to count as the owner.
-    pub match_threshold: f64,
-    /// How often to look at the camera, in milliseconds.
-    pub check_every_ms: u64,
-    /// If true, run the command immediately (no grace period) when someone
-    /// other than the owner is in front of the camera and the owner is not.
-    pub aggressive_mode: bool,
     /// Aggressive mode fires only after this many checks in a row see a
     /// stranger and not the owner. One check every `check_every_ms`, so the
     /// wait is `aggressive_checks x check_every_ms`. At least 1.
     pub aggressive_checks: u64,
+    /// If true, run the command immediately (no grace period) when someone
+    /// other than the owner is in front of the camera and the owner is not.
+    pub aggressive_mode: bool,
     /// If true, the watcher starts by itself when the owner logs in.
     pub autostart: bool,
+    /// How often to look at the camera, in milliseconds.
+    pub check_every_ms: u64,
+    /// The bash command to run.
+    pub command: String,
     /// If true, stopping the watcher (`nodonuts stop`, `kill`, `pkill`)
     /// needs the owner's face. If the owner isn't seen, the command runs
     /// before the watcher exits.
     pub face_checkout: bool,
+    /// How long the owner may be away before the command runs.
+    pub grace_seconds: u64,
+    /// Minimum cosine similarity (0 to 1) for a face to count as the owner.
+    pub match_threshold: f64,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            grace_seconds: 30,
-            command: "echo 'The owner is gone!'".to_string(),
-            // SFace's recommended threshold for cosine similarity.
-            match_threshold: 0.36,
-            check_every_ms: 500,
-            aggressive_mode: false,
             // 2 = one misread frame of the owner is not enough to fire.
             aggressive_checks: 2,
+            aggressive_mode: false,
             autostart: false,
+            check_every_ms: 500,
+            command: "echo 'The owner is gone!'".to_string(),
             // On by default: without it, anyone at the laptop can simply
             // run `nodonuts stop` during the grace period.
             face_checkout: true,
+            grace_seconds: 30,
+            // SFace's recommended threshold for cosine similarity.
+            match_threshold: 0.36,
         }
     }
 }
@@ -271,6 +275,22 @@ mod tests {
         // ...but face_checkout is on, including for older configs.
         assert!(config.face_checkout);
         assert_eq!(config.aggressive_checks, 2);
+    }
+
+    #[test]
+    fn settings_are_shown_in_alphabetical_order() {
+        let text = Config::default().to_toml().unwrap();
+        // The key at the start of each `key = value` line, in print order.
+        let shown: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.split_once(" = "))
+            .map(|(key, _value)| key)
+            .collect();
+        let mut sorted = shown.clone();
+        sorted.sort();
+        assert_eq!(shown, sorted);
+        // Every setting is shown, and `KEYS` lists the same ones in order.
+        assert_eq!(shown, KEYS);
     }
 
     #[test]
