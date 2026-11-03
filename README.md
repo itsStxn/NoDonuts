@@ -338,7 +338,3 @@ Code layout (`src/`):
 Models (`models/`) are embedded in the binary, both from
 [OpenCV Zoo](https://github.com/opencv/opencv_zoo) (Apache-2.0):
 `face_detection_yunet_2023mar.onnx` and `face_recognition_sface_2021dec.onnx`.
-
-## Useful links
-
-- [Code Browser](https://code.amazon.com/packages/NoDonuts/)
