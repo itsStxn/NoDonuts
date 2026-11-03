@@ -11,6 +11,7 @@ use clap::Parser;
 // Returning `Result` from `main` means any error that reaches here is
 // printed (with its context chain) and the program exits with status 1.
 fn main() -> Result<()> {
+    exit_quietly_on_broken_pipe();
     let cli = Cli::parse();
     let paths = Paths::locate()?;
     match cli.command {
@@ -23,6 +24,33 @@ fn main() -> Result<()> {
         Command::Watch => watcher::run(&paths),
         Command::Config { action } => run_config(&paths, action),
     }
+}
+
+/// Makes `nodonuts config show | head -1` end quietly instead of crashing.
+///
+/// When the reader of our output goes away (here, `head` after one line),
+/// writing to it fails with "broken pipe". Rust's `println!` turns that into
+/// a panic with a scary message. Most command-line tools just stop silently
+/// instead (they're ended by the SIGPIPE signal, exit status 141). Restoring
+/// that signal would need `unsafe` code, so instead this catches exactly
+/// that one panic and exits the same way. Any other panic is reported as
+/// usual.
+fn exit_quietly_on_broken_pipe() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // The panic message is a `String` or a `&str`, depending on how the
+        // panic was raised.
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if message.starts_with("failed printing to") && message.contains("Broken pipe") {
+            std::process::exit(141); // 128 + SIGPIPE (13), like other tools
+        }
+        default_hook(info);
+    }));
 }
 
 fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {

@@ -192,3 +192,7 @@ opt-level = 3
 
 [profile.release]
 # debug = "limited"
+# Drop the symbol tables from the installed binary: smaller file, same
+# behavior. (Crash backtraces lose function names; the log has the context
+# that matters.)
+strip = true
