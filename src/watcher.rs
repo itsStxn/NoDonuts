@@ -469,7 +469,8 @@ fn watch(paths: &Paths) -> Result<()> {
     signal_hook::flag::register(SIGHUP, Arc::new(AtomicBool::new(false)))?;
 
     let finder = OnnxFaceFinder::load()?;
-    let mut watcher = Watcher::new(Box::new(Webcam::new()), Box::new(finder), owner, &config);
+    let webcam = Webcam::new(&config.camera);
+    let mut watcher = Watcher::new(Box::new(webcam), Box::new(finder), owner, &config);
     let interval = Duration::from_millis(config.check_every_ms);
     let aggressive = if config.aggressive_mode {
         format!("on, {} checks", config.aggressive_checks)

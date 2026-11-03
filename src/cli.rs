@@ -29,6 +29,8 @@ pub enum Command {
     /// Update the login entry to point at this copy of nodonuts. Run it from
     /// the copy you want started at login, e.g. after moving the program.
     Refresh,
+    /// Choose which camera to use, from the cameras connected now.
+    Camera,
     /// Set or change the fallback password, used by `stop` when your face
     /// isn't recognized.
     Password {

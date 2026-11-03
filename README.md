@@ -44,6 +44,7 @@ macOS lock example: `pmset displaysleepnow`.
 | `nodonuts start` | Starts the background watcher. Only one can run: a second `start` (even at the same moment, e.g. with autostart) says it's already watching |
 | `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face, or the fallback password) |
 | `nodonuts status` | Shows whether it is running (and its PID), whether it starts at login, and whether a fallback password is set |
+| `nodonuts camera` | Lists the usable cameras and lets you choose one (see [Choosing a camera](#choosing-a-camera)). Only while the watcher is stopped |
 | `nodonuts password` | Sets or changes the fallback password (`--remove` to delete it). Only while the watcher is stopped |
 | `nodonuts refresh` | Updates the login entry to match `autostart`, pointing at the copy you run it from. Only while the watcher is stopped |
 | `nodonuts config show` | Prints all settings |
@@ -63,10 +64,11 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 
 | Key | Default | Meaning |
 |---|---|---|
-| `aggressive_checks` | `2` | Aggressive mode fires after this many checks in a row see another face and not yours (1 or more). Counted in checks of `check_every_ms`: the default is 2 x 500 ms, about 1 s |
+| `aggressive_checks` | `2` | Aggressive mode fires after this many checks in a row see another face and not yours (1 or more). Counted in checks of `check_every_ms`: the default is 2 x 1000 ms, about 2 s |
 | `aggressive_mode` | `false` | `true` = run the command without waiting for the grace period when another face is seen and yours is not |
 | `autostart` | `false` | `true` = start the watcher automatically when you log in |
-| `check_every_ms` | `500` | How often the camera is checked |
+| `camera` | `built-in` | Which camera to use: `built-in` (the laptop's own) or a camera's name. Choose it with `nodonuts camera`, not `config set` |
+| `check_every_ms` | `1000` | How often the camera is checked. Each check costs about 100 ms of CPU, so this sets how busy NoDonuts is: about 10% of one core at 1000, 20% at 500, 6% at 2000. Checking less often also makes aggressive mode slower (see `aggressive_checks`) |
 | `command` | `echo 'The owner is gone!'` | Bash command to run (see [How the command runs](#how-the-command-runs)) |
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
 | `face_checks` | `3` | How many face checkout attempts `nodonuts stop` makes before asking for the fallback password. 1 to 10. Each attempt lasts about 3000 ms, whatever this value is, so the default of 3 means up to about 9000 ms in total |
@@ -159,8 +161,8 @@ nodonuts config set command '/home/me/scripts/away.sh'
   for `aggressive_checks` checks in a row, the command runs without waiting
   for the grace period.
   - The wait depends on `check_every_ms`: it is
-    `aggressive_checks x check_every_ms`. 2 checks at 500 ms is about 1 s; the
-    same 2 checks at 2000 ms is about 4 s.
+    `aggressive_checks x check_every_ms`. 2 checks at 1000 ms (the default)
+    is about 2 s; the same 2 checks at 500 ms is about 1 s.
   - "In a row" means any other check resets the count to 0: your face, an
     empty frame, a camera error, or the laptop sleeping in between.
   - If you and someone else are both in view, nothing happens. Camera errors
@@ -215,7 +217,8 @@ stranger.
 - Face checkout: see [below](#face-checkout).
 - Closing the lid suspends the watcher. On wake you get a full grace period.
 - Clamshell mode (lid closed, external monitor) disables the built-in
-  camera, so the command fires. Use an external camera instead.
+  camera, so the command fires. Use an external camera instead (choose it
+  with `nodonuts camera`).
 - No liveness check: a photo of you could fool it.
 
 ## Face checkout
@@ -285,6 +288,37 @@ light, an odd angle, or (on Linux) a video call holding the camera.
   command, but think twice with something like `reboot`.
 - Changing settings needs your face too, since it means stopping the watcher
   first.
+
+## Choosing a camera
+
+NoDonuts uses the laptop's built-in camera unless you choose another one:
+
+```
+$ nodonuts camera
+Cameras:
+  1. HP 5MP Camera: HP 5MP Camera   (built-in, current)
+  2. Logitech C920
+Choose a camera [1-2], or press Enter to keep the current one:
+```
+
+- **Only usable cameras are listed.** Infrared cameras (black and white,
+  used for face login) and the extra metadata devices Linux shows for each
+  camera are left out, since the face models need a color picture.
+- **The built-in camera:** on Linux, it's the one on an internal port. On
+  macOS, it's found by name (e.g. "FaceTime"), and an iPhone used as a
+  webcam is never picked by default. If neither applies, the first camera
+  is used.
+- **What's saved:** the built-in camera is saved as `built-in`; any other is
+  saved by name, so plugging cameras in or out doesn't change which one
+  you chose.
+- **If the chosen camera is missing** (e.g. an unplugged webcam), the
+  watcher uses the built-in one instead and logs a warning, so you stay
+  protected.
+- **`nodonuts enroll` uses the chosen camera too.** After switching
+  cameras, re-enroll: a different lens and angle can make your face harder
+  to recognize.
+- Two connected cameras with exactly the same name can't be told apart:
+  the first one is used.
 
 ## Requirements
 

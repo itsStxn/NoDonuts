@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
-pub const KEYS: [&str; 11] = [
+pub const KEYS: [&str; 12] = [
     "aggressive_checks",
     "aggressive_mode",
     "autostart",
+    "camera",
     "check_every_ms",
     "command",
     "face_checkout",
@@ -40,6 +41,9 @@ pub struct Config {
     pub aggressive_mode: bool,
     /// If true, the watcher starts by itself when the owner logs in.
     pub autostart: bool,
+    /// Which camera to use: `built-in` (the laptop's own), or a camera's
+    /// name as chosen with `nodonuts camera`.
+    pub camera: String,
     /// How often to look at the camera, in milliseconds.
     pub check_every_ms: u64,
     /// The bash command to run.
@@ -75,7 +79,11 @@ impl Default for Config {
             aggressive_checks: 2,
             aggressive_mode: false,
             autostart: false,
-            check_every_ms: 500,
+            camera: "built-in".to_string(),
+            // Each check costs ~100 ms of CPU (the face models): every
+            // 1000 ms is ~10% of one core, half of what 500 ms costs, and
+            // nothing a 30 s grace period would notice.
+            check_every_ms: 1000,
             command: "echo 'The owner is gone!'".to_string(),
             // On by default: without it, anyone at the laptop can simply
             // run `nodonuts stop` during the grace period.
@@ -101,6 +109,9 @@ impl Config {
         }
         if self.command.trim().is_empty() {
             bail!("command must not be empty");
+        }
+        if self.camera.trim().is_empty() {
+            bail!("camera must not be empty (use `built-in` for the laptop's own camera)");
         }
         // `contains` on a range is false for NaN too.
         if !(0.0..=1.0).contains(&self.threshold_owner) {
@@ -144,6 +155,7 @@ impl Config {
             "aggressive_mode" => self.aggressive_mode.to_string(),
             "aggressive_checks" => self.aggressive_checks.to_string(),
             "autostart" => self.autostart.to_string(),
+            "camera" => self.camera.clone(),
             "face_checkout" => self.face_checkout.to_string(),
             "face_checks" => self.face_checks.to_string(),
             "logs_maxdays" => self.logs_maxdays.to_string(),
@@ -171,6 +183,9 @@ impl Config {
                     .with_context(|| format!("{key} must be a whole number of 1 or more"))?
             }
             "autostart" => updated.autostart = parse_on_off(key, value)?,
+            // Chosen from a list of the cameras actually connected, so
+            // a typo'd name can't slip in.
+            "camera" => bail!("choose the camera with `nodonuts camera`"),
             "face_checkout" => updated.face_checkout = parse_on_off(key, value)?,
             "logs_maxdays" => {
                 updated.logs_maxdays = value.trim().parse().with_context(|| {
@@ -292,6 +307,22 @@ mod tests {
         assert_eq!(config.get("threshold_owner").unwrap(), "0.5");
         assert_eq!(config.get("threshold_stranger").unwrap(), "0.3");
         assert_eq!(config.get("check_every_ms").unwrap(), "250");
+    }
+
+    #[test]
+    fn camera_defaults_to_built_in_and_is_not_set_by_hand() {
+        let mut config = Config::default();
+        assert_eq!(config.get("camera").unwrap(), "built-in");
+        // Only `nodonuts camera` chooses it.
+        assert!(config.set("camera", "Logitech C920").is_err());
+        assert_eq!(config.camera, "built-in");
+        // A chosen camera round-trips through the file.
+        config.camera = "Logitech C920".to_string();
+        let text = config.to_toml().unwrap();
+        assert_eq!(Config::from_toml(&text).unwrap().camera, "Logitech C920");
+        // Older files without the key get the built-in camera.
+        assert_eq!(Config::from_toml("").unwrap().camera, "built-in");
+        assert!(Config::from_toml("camera = ''").is_err());
     }
 
     #[test]

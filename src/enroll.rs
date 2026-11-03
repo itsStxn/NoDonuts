@@ -8,6 +8,7 @@
 //! image.
 
 use crate::camera::{self, FrameSource, Webcam};
+use crate::config;
 use crate::daemon;
 use crate::face::{self, Embedding, FaceFinder, OnnxFaceFinder};
 use crate::files::{self, Paths};
@@ -32,7 +33,9 @@ pub fn run(paths: &Paths) -> Result<()> {
     camera::request_permission()?;
     println!("Loading face models...");
     let finder = OnnxFaceFinder::load()?;
-    let mut webcam = Webcam::new();
+    // Enroll with the camera the watcher will use.
+    let config = config::load(&paths.config_file)?;
+    let mut webcam = Webcam::new(&config.camera);
     println!("Look at the camera. Move your head slightly between shots.");
     let embedding = capture_owner(&mut webcam, &finder, PAUSE_BETWEEN_FRAMES)?;
     save(&paths.face_file, &embedding)?;

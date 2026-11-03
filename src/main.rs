@@ -4,9 +4,10 @@
 use amzn_no_donuts::cli::{Cli, Command, ConfigAction};
 use amzn_no_donuts::config::{self, Config};
 use amzn_no_donuts::files::Paths;
-use amzn_no_donuts::{autostart, daemon, enroll, password, prompt, watcher};
+use amzn_no_donuts::{autostart, camera, daemon, enroll, password, prompt, watcher};
 use anyhow::{Result, bail};
 use clap::Parser;
+use std::io::{BufRead, IsTerminal, Write};
 
 // Returning `Result` from `main` means any error that reaches here is
 // printed (with its context chain) and the program exits with status 1.
@@ -21,6 +22,7 @@ fn main() -> Result<()> {
         Command::Status => daemon::status(&paths),
         Command::Refresh => refresh(&paths),
         Command::Password { remove } => set_password(&paths, remove),
+        Command::Camera => choose_camera(&paths),
         Command::Watch => watcher::run(&paths),
         Command::Config { action } => run_config(&paths, action),
     }
@@ -80,6 +82,81 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
             println!("Settings reset to defaults.");
             apply_autostart(paths, false)?;
         }
+    }
+    Ok(())
+}
+
+/// `nodonuts camera`: list the usable cameras and let the owner pick one.
+fn choose_camera(paths: &Paths) -> Result<()> {
+    // Also: on Linux the watcher holds the camera, and listing opens each.
+    refuse_while_running(paths, "the camera")?;
+    if !std::io::stdin().is_terminal() {
+        bail!("`nodonuts camera` is interactive: run it in a terminal");
+    }
+    camera::request_permission()?;
+    let cameras = camera::list_usable();
+    if cameras.is_empty() {
+        bail!("no usable camera found (is one connected, and not used by another app?)");
+    }
+    let mut config = config::load(&paths.config_file)?;
+    let built_in = camera::pick_built_in(&cameras).map(|c| c.index);
+    let current = camera::resolve(&config.camera, &cameras).map(|(c, _)| c.index);
+
+    println!("Cameras:");
+    for (number, entry) in cameras.iter().enumerate() {
+        let mut notes = Vec::new();
+        if Some(entry.index) == built_in {
+            notes.push("built-in");
+        }
+        if Some(entry.index) == current {
+            notes.push("current");
+        }
+        let notes = if notes.is_empty() {
+            String::new()
+        } else {
+            format!("   ({})", notes.join(", "))
+        };
+        println!("  {}. {}{notes}", number + 1, entry.name);
+    }
+
+    let count = cameras.len();
+    let chosen = loop {
+        print!("Choose a camera [1-{count}], or press Enter to keep the current one: ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().lock().read_line(&mut line)? == 0 {
+            return Ok(()); // end of input: keep the current camera
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            println!("Camera unchanged.");
+            return Ok(());
+        }
+        match line.parse::<usize>() {
+            Ok(n) if (1..=count).contains(&n) => break &cameras[n - 1],
+            _ => println!("Please type a number from 1 to {count}."),
+        }
+    };
+
+    // The built-in camera is saved as `built-in`, not by name, so it keeps
+    // meaning "the laptop's own camera" if names or numbers change.
+    let setting = if Some(chosen.index) == built_in {
+        camera::BUILT_IN.to_string()
+    } else {
+        chosen.name.clone()
+    };
+    if setting == config.camera {
+        println!("Camera unchanged: {}", chosen.name);
+        return Ok(());
+    }
+    config.camera = setting;
+    config::save(&paths.config_file, &config)?;
+    println!("Camera set to: {}", chosen.name);
+    if paths.face_file.exists() {
+        println!(
+            "Tip: re-enroll with this camera (`nodonuts enroll`); a different lens and angle \
+             can make your face harder to recognize."
+        );
     }
     Ok(())
 }
