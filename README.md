@@ -67,7 +67,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `check_every_ms` | `500` | How often the camera is checked |
 | `command` | `echo 'The owner is gone!'` | Bash command to run (see [How the command runs](#how-the-command-runs)) |
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
-| `face_checks` | `3` | How many face checkout attempts (about 3 s each) `nodonuts stop` makes before asking for the fallback password. 1 to 10 |
+| `face_checks` | `3` | How many face checkout attempts `nodonuts stop` makes before asking for the fallback password. 1 to 10. Each attempt lasts about 3000 ms, whatever this value is, so the default of 3 means up to about 9000 ms in total |
 | `grace_seconds` | `30` | How long you may be away before the command runs |
 | `match_threshold` | `0.36` | Minimum similarity (0 to 1) a face needs to count as yours. **Higher is stricter:** closer to 1, strangers are rejected more reliably but your own face is missed more often (bad angle or light). Closer to 0, almost any face passes as you. Faces below it count as strangers in aggressive mode |
 
