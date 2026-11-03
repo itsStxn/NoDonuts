@@ -36,7 +36,10 @@ pub struct Watcher {
     camera: Box<dyn FrameSource>,
     finder: Box<dyn FaceFinder>,
     owner: Embedding,
-    threshold: f64,
+    /// At or above: the owner.
+    threshold_owner: f64,
+    /// Below: a stranger. In between: unsure (neither).
+    threshold_stranger: f64,
     rules: Rules,
     tracker: Tracker,
     /// The last error we logged, so a busy camera does not flood the log.
@@ -63,7 +66,8 @@ impl Watcher {
             camera,
             finder,
             owner,
-            threshold: config.match_threshold,
+            threshold_owner: config.threshold_owner,
+            threshold_stranger: config.threshold_stranger,
             rules: Rules::new(
                 config.grace_seconds,
                 config.check_every_ms,
@@ -115,8 +119,10 @@ impl Watcher {
             let frame = self.camera.grab()?;
             let faces = self.finder.find_faces(&frame)?;
             Ok(Sighting {
-                owner: face::is_owner(&faces, &self.owner, self.threshold),
-                stranger: face::has_stranger(&faces, &self.owner, self.threshold),
+                owner: face::is_owner(&faces, &self.owner, self.threshold_owner),
+                // A face scoring between the two thresholds ("unsure", e.g.
+                // the owner's turned head) is neither owner nor stranger.
+                stranger: face::has_stranger(&faces, &self.owner, self.threshold_stranger),
             })
         }));
         match result {
@@ -621,6 +627,8 @@ mod tests {
         Empty,
         Stranger,
         OwnerAndStranger,
+        /// A face scoring between the two thresholds.
+        Unsure,
         CameraError,
     }
     use Scene::*;
@@ -659,10 +667,21 @@ mod tests {
                 area: 80.0,
                 embedding: unit_vector(1),
             };
+            // Similarity 0.3 to the owner: between the default thresholds
+            // (0.2 and 0.36), like the owner's own head turned away.
+            let unsure = Face {
+                area: 90.0,
+                embedding: face::normalize({
+                    let mut e = unit_vector(0);
+                    e[2] = (1.0_f32 - 0.3 * 0.3).sqrt() / 0.3;
+                    e
+                }),
+            };
             Ok(match self.current.get() {
                 Owner => vec![owner],
                 Stranger => vec![stranger],
                 OwnerAndStranger => vec![owner, stranger],
+                Unsure => vec![unsure],
                 Empty | CameraError => Vec::new(),
             })
         }
@@ -1126,6 +1145,58 @@ mod tests {
         }
         // SIGHUP is handled separately (ignored), and must not stop it.
         assert!(!signals.contains(&SIGHUP));
+    }
+
+    #[test]
+    fn the_unsure_face_really_scores_in_between() {
+        let finder = FakeFinder {
+            current: Rc::new(Cell::new(Unsure)),
+        };
+        let faces = finder.find_faces(&RgbImage::new(4, 4)).unwrap();
+        let score = face::cosine_similarity(&faces[0].embedding, &unit_vector(0));
+        assert!((score - 0.3).abs() < 1e-4, "{score}");
+    }
+
+    #[test]
+    fn an_unsure_face_does_not_trigger_aggressive_mode() {
+        // Owner, then an unsure face (e.g. head turned): no aggressive fire,
+        // only the normal grace period (3 s here).
+        let mut w = watcher(vec![Owner, Unsure], 3, true);
+        assert_eq!(run_seconds(&mut w, 20), vec![4]);
+    }
+
+    #[test]
+    fn an_unsure_face_does_not_count_as_the_owner_either() {
+        // Without aggressive mode: the grace period runs out as usual.
+        let mut w = watcher(vec![Owner, Unsure], 3, false);
+        assert_eq!(run_seconds(&mut w, 20), vec![4]);
+        assert!(!w.look().owner);
+    }
+
+    #[test]
+    fn equal_thresholds_bring_back_the_old_behavior() {
+        // No unsure zone: the same face now counts as a stranger.
+        let shared = Rc::new(Cell::new(Empty));
+        let camera = ScriptedCamera {
+            script: vec![Owner, Owner, Unsure],
+            position: 0,
+            current: Rc::clone(&shared),
+        };
+        let config = Config {
+            grace_seconds: 30,
+            check_every_ms: 1000,
+            aggressive_mode: true,
+            threshold_stranger: 0.36,
+            ..Config::default()
+        };
+        let mut w = Watcher::new(
+            Box::new(camera),
+            Box::new(FakeFinder { current: shared }),
+            unit_vector(0),
+            &config,
+        );
+        // Unsure face from 2 s: aggressive fires after 2 checks, at 3 s.
+        assert_eq!(run_seconds(&mut w, 10), vec![3]);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
-pub const KEYS: [&str; 9] = [
+pub const KEYS: [&str; 10] = [
     "aggressive_checks",
     "aggressive_mode",
     "autostart",
@@ -15,7 +15,8 @@ pub const KEYS: [&str; 9] = [
     "face_checkout",
     "face_checks",
     "grace_seconds",
-    "match_threshold",
+    "threshold_owner",
+    "threshold_stranger",
 ];
 
 /// All settings. `Serialize`/`Deserialize` let `serde` convert this struct
@@ -52,8 +53,16 @@ pub struct Config {
     pub face_checks: u64,
     /// How long the owner may be away before the command runs.
     pub grace_seconds: u64,
-    /// Minimum cosine similarity (0 to 1) for a face to count as the owner.
-    pub match_threshold: f64,
+    /// Minimum similarity (0 to 1) for a face to count as the owner.
+    /// `alias`: config files saved before the rename used `match_threshold`;
+    /// they still load, and are saved with the new name.
+    #[serde(alias = "match_threshold")]
+    pub threshold_owner: f64,
+    /// A face below this similarity (0 to 1) counts as a stranger, for
+    /// aggressive mode. Between this and `threshold_owner` a face is
+    /// "unsure": not the owner, but not a stranger either. At most
+    /// `threshold_owner`; setting them equal removes the unsure zone.
+    pub threshold_stranger: f64,
 }
 
 impl Default for Config {
@@ -72,7 +81,10 @@ impl Default for Config {
             face_checks: 3,
             grace_seconds: 30,
             // SFace's recommended threshold for cosine similarity.
-            match_threshold: 0.36,
+            threshold_owner: 0.36,
+            // Well below the owner's: a turned or badly lit owner usually
+            // scores in between, which is "unsure", not a stranger.
+            threshold_stranger: 0.2,
         }
     }
 }
@@ -87,8 +99,19 @@ impl Config {
             bail!("command must not be empty");
         }
         // `contains` on a range is false for NaN too.
-        if !(0.0..=1.0).contains(&self.match_threshold) {
-            bail!("match_threshold must be between 0 and 1");
+        if !(0.0..=1.0).contains(&self.threshold_owner) {
+            bail!("threshold_owner must be between 0 and 1");
+        }
+        if !(0.0..=1.0).contains(&self.threshold_stranger) {
+            bail!("threshold_stranger must be between 0 and 1");
+        }
+        if self.threshold_stranger > self.threshold_owner {
+            bail!(
+                "threshold_stranger ({}) can't be higher than threshold_owner ({}). \
+                 Lower threshold_stranger first, or raise threshold_owner",
+                self.threshold_stranger,
+                self.threshold_owner
+            );
         }
         if self.check_every_ms == 0 {
             bail!("check_every_ms must be a whole number greater than 0");
@@ -108,7 +131,8 @@ impl Config {
         let value = match key {
             "grace_seconds" => self.grace_seconds.to_string(),
             "command" => self.command.clone(),
-            "match_threshold" => self.match_threshold.to_string(),
+            "threshold_owner" => self.threshold_owner.to_string(),
+            "threshold_stranger" => self.threshold_stranger.to_string(),
             "check_every_ms" => self.check_every_ms.to_string(),
             "aggressive_mode" => self.aggressive_mode.to_string(),
             "aggressive_checks" => self.aggressive_checks.to_string(),
@@ -128,12 +152,8 @@ impl Config {
         match key {
             "grace_seconds" => updated.grace_seconds = parse_whole_number(key, value)?,
             "command" => updated.command = value.to_string(),
-            "match_threshold" => {
-                updated.match_threshold = value
-                    .trim()
-                    .parse()
-                    .with_context(|| format!("{key} must be a number between 0 and 1"))?
-            }
+            "threshold_owner" => updated.threshold_owner = parse_fraction(key, value)?,
+            "threshold_stranger" => updated.threshold_stranger = parse_fraction(key, value)?,
             "check_every_ms" => updated.check_every_ms = parse_whole_number(key, value)?,
             "aggressive_mode" => updated.aggressive_mode = parse_on_off(key, value)?,
             "aggressive_checks" => {
@@ -190,6 +210,13 @@ pub fn save(path: &Path, config: &Config) -> Result<()> {
     files::write_private(path, config.to_toml()?.as_bytes())
 }
 
+fn parse_fraction(key: &str, value: &str) -> Result<f64> {
+    value
+        .trim()
+        .parse()
+        .with_context(|| format!("{key} must be a number between 0 and 1"))
+}
+
 fn parse_whole_number(key: &str, value: &str) -> Result<u64> {
     value
         .trim()
@@ -226,7 +253,8 @@ mod tests {
         let mut config = Config::default();
         config.set("grace_seconds", "45").unwrap();
         config.set("command", "reboot").unwrap();
-        config.set("match_threshold", "0.5").unwrap();
+        config.set("threshold_owner", "0.5").unwrap();
+        config.set("threshold_stranger", "0.3").unwrap();
         config.set("check_every_ms", "250").unwrap();
         config.set("aggressive_mode", "true").unwrap();
         assert_eq!(config.get("aggressive_mode").unwrap(), "true");
@@ -245,8 +273,39 @@ mod tests {
         assert_eq!(config.get("autostart").unwrap(), "true");
         assert_eq!(config.get("grace_seconds").unwrap(), "45");
         assert_eq!(config.get("command").unwrap(), "reboot");
-        assert_eq!(config.get("match_threshold").unwrap(), "0.5");
+        assert_eq!(config.get("threshold_owner").unwrap(), "0.5");
+        assert_eq!(config.get("threshold_stranger").unwrap(), "0.3");
         assert_eq!(config.get("check_every_ms").unwrap(), "250");
+    }
+
+    #[test]
+    fn threshold_stranger_can_never_exceed_threshold_owner() {
+        let mut config = Config::default(); // owner 0.36, stranger 0.2
+        // Raising the stranger threshold above the owner's is refused...
+        assert!(config.set("threshold_stranger", "0.5").is_err());
+        // ...and so is lowering the owner's below the stranger's.
+        assert!(config.set("threshold_owner", "0.1").is_err());
+        assert_eq!(config, Config::default(), "nothing changed");
+        // Equal is allowed: no unsure zone, like before the split.
+        config.set("threshold_stranger", "0.36").unwrap();
+        // A hand-edited file breaking the rule doesn't load.
+        assert!(Config::from_toml("threshold_owner = 0.2\nthreshold_stranger = 0.3").is_err());
+    }
+
+    #[test]
+    fn old_match_threshold_files_still_load() {
+        let config = Config::from_toml("match_threshold = 0.4\ngrace_seconds = 10").unwrap();
+        assert_eq!(config.threshold_owner, 0.4);
+        assert_eq!(
+            config.threshold_stranger, 0.2,
+            "default for the new setting"
+        );
+        // Saved with the new name from now on.
+        let text = config.to_toml().unwrap();
+        assert!(text.contains("threshold_owner = 0.4"));
+        assert!(!text.contains("match_threshold"));
+        // But the old name isn't a `config set` key any more.
+        assert!(Config::default().set("match_threshold", "0.4").is_err());
     }
 
     #[test]
@@ -257,9 +316,12 @@ mod tests {
             ("grace_seconds", "-5"),
             ("grace_seconds", "1.5"),
             ("grace_seconds", "soon"),
-            ("match_threshold", "1.1"),
-            ("match_threshold", "-0.1"),
-            ("match_threshold", "NaN"),
+            ("threshold_owner", "1.1"),
+            ("threshold_owner", "-0.1"),
+            ("threshold_owner", "NaN"),
+            ("threshold_stranger", "-0.1"),
+            ("threshold_stranger", "NaN"),
+            ("threshold_stranger", "0.9"),
             ("check_every_ms", "0"),
             ("command", "   "),
             ("aggressive_mode", "yes"),

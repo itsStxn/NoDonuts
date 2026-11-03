@@ -69,7 +69,8 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
 | `face_checks` | `3` | How many face checkout attempts `nodonuts stop` makes before asking for the fallback password. 1 to 10. Each attempt lasts about 3000 ms, whatever this value is, so the default of 3 means up to about 9000 ms in total |
 | `grace_seconds` | `30` | How long you may be away before the command runs |
-| `match_threshold` | `0.36` | Minimum similarity (0 to 1) a face needs to count as yours. **Higher is stricter:** closer to 1, strangers are rejected more reliably but your own face is missed more often (bad angle or light). Closer to 0, almost any face passes as you. Faces below it count as strangers in aggressive mode |
+| `threshold_owner` | `0.36` | Minimum similarity (0 to 1) a face needs to count as yours. **Higher is stricter:** closer to 1, strangers are rejected more reliably but your own face is missed more often (bad angle or light). Closer to 0, almost any face passes as you. Called `match_threshold` before; old config files still load |
+| `threshold_stranger` | `0.2` | A face below this similarity (0 to 1) counts as a stranger, for aggressive mode. Faces between this and `threshold_owner` are "unsure" (see [How a face is classified](#how-a-face-is-classified)). Can't be higher than `threshold_owner` |
 
 ## How the command runs
 
@@ -164,10 +165,27 @@ nodonuts config set command '/home/me/scripts/away.sh'
   - The grace period keeps running alongside. Whichever finishes first runs
     the command, and the other is cancelled: the command runs once per
     absence either way.
-  - Caveat: your own face at a sharp angle or in poor light can score below
-    `match_threshold` and look like a stranger. `aggressive_checks` is the
-    guard against this. `1` fires on a single misread frame, so keep it at 2
-    or more, and higher for destructive commands like `reboot`.
+  - Only clear strangers count. Your own face at a sharp angle or in poor
+    light scores lower than usual, but usually still above
+    `threshold_stranger`, so it counts as "unsure", not a stranger, and
+    doesn't trigger aggressive mode. `aggressive_checks` guards against the
+    rest: `1` fires on a single misread frame, so keep it at 2 or more, and
+    higher for destructive commands like `reboot`.
+
+### How a face is classified
+
+Each face the camera sees gets a similarity score against your enrolled
+face, from 0 (nothing alike) to 1 (identical):
+
+| Score | Counts as | Effect |
+|---|---|---|
+| `threshold_owner` (0.36) or more | **you** | you're present |
+| between the two | **unsure** | not you (the grace period runs), but not a stranger either (no aggressive mode) |
+| below `threshold_stranger` (0.2) | **stranger** | counts toward aggressive mode |
+
+`threshold_stranger` can't be higher than `threshold_owner`. Set them equal
+to remove the unsure zone, so every face that isn't you counts as a
+stranger.
 - Autostart: `nodonuts config set autostart true` adds a login entry
   that runs `nodonuts start` (Linux: `~/.config/autostart/nodonuts.desktop`,
   macOS: `~/Library/LaunchAgents/com.amazon.nodonuts.plist`). It starts at
