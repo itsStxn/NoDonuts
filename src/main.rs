@@ -5,7 +5,7 @@ use amzn_no_donuts::cli::{Cli, Command, ConfigAction};
 use amzn_no_donuts::config::{self, Config};
 use amzn_no_donuts::files::Paths;
 use amzn_no_donuts::{autostart, daemon, enroll, watcher};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
 
 // Returning `Result` from `main` means any error that reaches here is
@@ -36,23 +36,35 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
             println!("{}", config.get(&key)?);
         }
         ConfigAction::Set { key, value } => {
+            refuse_while_running(paths)?;
             let mut config = config::load(&paths.config_file)?;
             config.set(&key, &value)?;
             config::save(&paths.config_file, &config)?;
             println!("{key} = {}", config.get(&key)?);
             if key == "autostart" {
-                // Takes effect at the next login; no restart needed.
                 apply_autostart(paths, config.autostart)?;
-            } else {
-                remind_if_running(paths)?;
             }
         }
         ConfigAction::Reset => {
+            refuse_while_running(paths)?;
             config::save(&paths.config_file, &Config::default())?;
             println!("Settings reset to defaults.");
             apply_autostart(paths, false)?;
-            remind_if_running(paths)?;
         }
+    }
+    Ok(())
+}
+
+/// Settings can only change while the watcher is stopped. Otherwise someone
+/// at the laptop could quietly change them (e.g. swap the command for a
+/// harmless one) for the next start, and the running watcher would be using
+/// different settings from the ones `config show` prints.
+fn refuse_while_running(paths: &Paths) -> Result<()> {
+    if let Some(pid) = daemon::running_pid(paths)? {
+        bail!(
+            "the watcher is running (PID {pid}), so settings can't be changed. \
+             Run `nodonuts stop` first"
+        );
     }
     Ok(())
 }
@@ -76,13 +88,4 @@ fn apply_autostart(paths: &Paths, enabled: bool) -> Result<()> {
 fn refresh(paths: &Paths) -> Result<()> {
     let config = config::load(&paths.config_file)?;
     apply_autostart(paths, config.autostart)
-}
-
-/// A running watcher keeps the settings it started with.
-fn remind_if_running(paths: &Paths) -> Result<()> {
-    if daemon::running_pid(paths)?.is_some() {
-        println!("The watcher is running with the old settings.");
-        println!("Apply the change with: nodonuts stop && nodonuts start");
-    }
-    Ok(())
 }

@@ -48,8 +48,10 @@ macOS lock example: `pmset displaysleepnow`.
 | `nodonuts config set <key> <value>` | Validates and saves one setting |
 | `nodonuts config reset` | Restores the defaults |
 
-A running watcher keeps the settings it started with. After changing
-settings, run `nodonuts stop && nodonuts start`.
+Settings can only be changed while the watcher is stopped: `config set` and
+`config reset` refuse while it runs, like `enroll` does. Reading them
+(`config show`, `config get`) always works. To change a setting:
+`nodonuts stop`, `nodonuts config set ...`, `nodonuts start`.
 
 ## Settings
 
@@ -169,9 +171,8 @@ nodonuts config set command 'echo "Gone at $(date +%T)!" >> ~/away.log'
 Without it, anyone at your unlocked laptop could type `nodonuts stop` (or
 `pkill nodonuts`) during the grace period, and nothing would happen. So it's
 on by default: only your face can stop the watcher quietly. To turn it off,
-run `nodonuts config set face_checkout false`, then
-`nodonuts stop && nodonuts start` (this stop still needs your face, since the
-running watcher keeps its settings).
+run `nodonuts stop` (this stop still needs your face), then
+`nodonuts config set face_checkout false` and `nodonuts start`.
 
 - When the watcher is asked to stop, it looks at the camera for about 3
   seconds.
@@ -193,8 +194,8 @@ running watcher keeps its settings).
   dark room, or (on Linux) a camera busy in a video call means stopping runs
   your command. That's harmless with a lock command, but think twice with
   something like `reboot`.
-- Applying new settings (`nodonuts stop && nodonuts start`) needs your face
-  too.
+- Changing settings needs your face too, since it means stopping the watcher
+  first.
 
 ## Requirements
 
