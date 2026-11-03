@@ -104,12 +104,40 @@ or similar files:
   login session's, with `autostart`). Use absolute paths for anything outside
   the standard system folders.
 
-Quoting tip: wrap the command in single quotes when you set it. Inside
-double quotes your own shell expands `$`, backticks and `!` before NoDonuts
-ever sees them:
+### Quoting: single quotes outside, double quotes inside
+
+Wrap the command in **single quotes** (`'...'`) when you set it, and use
+**double quotes** (`"..."`) for anything inside it:
 
 ```bash
+nodonuts config set command 'echo "some stuff"'
 nodonuts config set command 'echo "Gone at $(date +%T)!" >> ~/away.log'
+```
+
+- **Single quotes keep the command exactly as you typed it.** Your shell
+  doesn't touch anything between them, so `$`, `$(...)`, backticks and `!`
+  are saved as-is and run later, when the command fires. In the second
+  example, `$(date +%T)` gives the time you left, not the time you ran
+  `config set`.
+- **Double quotes inside work as usual,** because a `"` inside `'...'` is
+  just a normal character. Use them for text with spaces, like the message
+  above.
+- **Avoid double quotes on the outside.** Your shell expands `$` and
+  backticks inside them right away, and `!` can fail with
+  `event not found`. So `"echo 'Gone at $(date)'"` would save a fixed time.
+- **A single quote can't go inside single quotes.** If you need one, as in
+  `It's`, write `'\''` in its place:
+  `'echo "It'\''s me"'` saves `echo "It's me"`. Usually it's simpler to
+  rephrase, or to move the logic into a script.
+
+Check what was saved with `nodonuts config get command`.
+
+**For anything longer, use a script.** Put the steps in a file, make it
+executable (`chmod +x`), and set its full path as the command. No quoting
+to worry about, and you can test it on its own:
+
+```bash
+nodonuts config set command '/home/me/scripts/away.sh'
 ```
 
 ## How it behaves
