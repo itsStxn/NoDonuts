@@ -54,7 +54,7 @@ repository = "ssh://git.amazon.com/pkg/NoDonuts"
 # making changes minor rather than major. In fact, since dependencies are
 # _always_ re-built when you put out a new build of a package, you rarely need
 # to increment your version number at all.
-version = "0.1.0"
+version = "0.2.0"
 
 # Setting publish to `["brazil"]` or `false` prevents the accidental publishing of
 # your code to the (public) registry at crates.io, as described in these documents:

@@ -24,7 +24,7 @@ source ~/.bashrc
 nodonuts --version
 ```
 
-The last line prints `nodonuts 0.1.0`. The build takes a few minutes the
+The last line prints `nodonuts <version>`. The build takes a few minutes the
 first time.
 
 - The `apt` line installs a C compiler and libclang: the camera library
@@ -58,7 +58,7 @@ source ~/.zshrc
 nodonuts --version
 ```
 
-The last line prints `nodonuts 0.1.0`.
+The last line prints `nodonuts 0.2.0`.
 
 - The `curl` line installs Rust. Skip it if you already have Rust 1.85 or
   newer.
