@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
-pub const KEYS: [&str; 10] = [
+pub const KEYS: [&str; 11] = [
     "aggressive_checks",
     "aggressive_mode",
     "autostart",
@@ -15,6 +15,7 @@ pub const KEYS: [&str; 10] = [
     "face_checkout",
     "face_checks",
     "grace_seconds",
+    "logs_maxdays",
     "threshold_owner",
     "threshold_stranger",
 ];
@@ -53,6 +54,8 @@ pub struct Config {
     pub face_checks: u64,
     /// How long the owner may be away before the command runs.
     pub grace_seconds: u64,
+    /// Empty the watcher's log once it's this many days old. 0 = never.
+    pub logs_maxdays: u64,
     /// Minimum similarity (0 to 1) for a face to count as the owner.
     /// `alias`: config files saved before the rename used `match_threshold`;
     /// they still load, and are saved with the new name.
@@ -80,6 +83,7 @@ impl Default for Config {
             // 3 attempts, about 9 s: room for a bad angle or bad light.
             face_checks: 3,
             grace_seconds: 30,
+            logs_maxdays: 7,
             // SFace's recommended threshold for cosine similarity.
             threshold_owner: 0.36,
             // Well below the owner's: a turned or badly lit owner usually
@@ -123,6 +127,9 @@ impl Config {
         if !(1..=10).contains(&self.face_checks) {
             bail!("face_checks must be a whole number from 1 to 10");
         }
+        if self.logs_maxdays > 3650 {
+            bail!("logs_maxdays must be a whole number from 0 (never empty) to 3650");
+        }
         Ok(())
     }
 
@@ -139,6 +146,7 @@ impl Config {
             "autostart" => self.autostart.to_string(),
             "face_checkout" => self.face_checkout.to_string(),
             "face_checks" => self.face_checks.to_string(),
+            "logs_maxdays" => self.logs_maxdays.to_string(),
             _ => bail!(unknown_key(key)),
         };
         Ok(value)
@@ -164,6 +172,11 @@ impl Config {
             }
             "autostart" => updated.autostart = parse_on_off(key, value)?,
             "face_checkout" => updated.face_checkout = parse_on_off(key, value)?,
+            "logs_maxdays" => {
+                updated.logs_maxdays = value.trim().parse().with_context(|| {
+                    format!("{key} must be a whole number from 0 (never empty) to 3650")
+                })?
+            }
             "face_checks" => {
                 updated.face_checks = value
                     .trim()
@@ -264,6 +277,9 @@ mod tests {
         assert_eq!(config.get("aggressive_checks").unwrap(), "1");
         config.set("aggressive_checks", "10").unwrap();
         assert_eq!(config.get("aggressive_checks").unwrap(), "10");
+        config.set("logs_maxdays", "0").unwrap();
+        config.set("logs_maxdays", "30").unwrap();
+        assert_eq!(config.get("logs_maxdays").unwrap(), "30");
         config.set("face_checks", "1").unwrap();
         config.set("face_checks", "10").unwrap();
         assert_eq!(config.get("face_checks").unwrap(), "10");
@@ -332,6 +348,9 @@ mod tests {
             ("face_checks", "0"),
             ("face_checks", "11"),
             ("face_checks", "2.5"),
+            ("logs_maxdays", "-1"),
+            ("logs_maxdays", "1.5"),
+            ("logs_maxdays", "3651"),
             ("aggressive_checks", "0"),
             ("aggressive_checks", "-1"),
             ("aggressive_checks", "1.5"),

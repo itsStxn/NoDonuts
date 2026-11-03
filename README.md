@@ -71,6 +71,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
 | `face_checks` | `3` | How many face checkout attempts `nodonuts stop` makes before asking for the fallback password. 1 to 10. Each attempt lasts about 3000 ms, whatever this value is, so the default of 3 means up to about 9000 ms in total |
 | `grace_seconds` | `30` | How long you may be away before the command runs |
+| `logs_maxdays` | `7` | Empty the watcher's log once it's this many days old. `0` keeps it forever. The running watcher does this, checking at start and about once a minute |
 | `threshold_owner` | `0.36` | Minimum similarity (0 to 1) a face needs to count as yours. **Higher is stricter:** closer to 1, strangers are rejected more reliably but your own face is missed more often (bad angle or light). Closer to 0, almost any face passes as you. Called `match_threshold` before; old config files still load |
 | `threshold_stranger` | `0.2` | A face below this similarity (0 to 1) counts as a stranger, for aggressive mode. Faces between this and `threshold_owner` are "unsure" (see [How a face is classified](#how-a-face-is-classified)). Can't be higher than `threshold_owner` |
 
@@ -297,8 +298,9 @@ The config holds a command that bash runs, so NoDonuts creates the config,
 the face file and the login entry with `0600` permissions. It refuses to
 start if the config or the face file is writable by others or not owned by
 you. The watcher logs to `~/.local/share/nodonuts/nodonuts.log` (Linux) or
-`~/Library/Application Support/nodonuts/nodonuts.log` (macOS). The full list
-of files is in [INSTALLATION.md](INSTALLATION.md#where-files-live).
+`~/Library/Application Support/nodonuts/nodonuts.log` (macOS), and empties
+it every `logs_maxdays` days (7 by default). The full list of files is in
+[INSTALLATION.md](INSTALLATION.md#where-files-live).
 
 ## Development
 
@@ -327,6 +329,7 @@ Code layout (`src/`):
 | `daemon.rs` | start / stop / status and the PID file |
 | `enroll.rs` | Enrollment and the saved face embedding |
 | `files.rs` | File locations and private-permission checks |
+| `logs.rs` | Empties the log once it's older than `logs_maxdays` |
 | `autostart.rs` | The login entry behind the `autostart` setting |
 | `control.rs` | The conversation between `nodonuts stop` and the watcher, over a local socket |
 | `password.rs` | The fallback password: Argon2 hash, save, load, verify |

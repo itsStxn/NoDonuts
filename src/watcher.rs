@@ -8,6 +8,7 @@ use crate::control::{Reply, STOP_REQUEST};
 use crate::enroll;
 use crate::face::{self, Embedding, FaceFinder, OnnxFaceFinder};
 use crate::files::{self, Paths};
+use crate::logs;
 use crate::password;
 use crate::presence::{self, Rules, Sighting, State, Tracker};
 use crate::runner;
@@ -389,6 +390,20 @@ fn stop_signals() -> Vec<i32> {
     signals
 }
 
+/// How often a running watcher checks whether the log is due to be emptied.
+const LOG_CHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// Empties the log if it's older than `max_days` (see `logs`), and notes it
+/// as the first line of the fresh log. A failure is only logged: keeping
+/// the log is better than stopping the watcher.
+fn empty_log_if_due(paths: &Paths, max_days: u64) {
+    match logs::empty_if_due(paths, max_days, SystemTime::now()) {
+        Ok(true) => log::info!("log emptied (older than logs_maxdays = {max_days} days)"),
+        Ok(false) => {}
+        Err(error) => log::warn!("could not empty the log: {error:#}"),
+    }
+}
+
 fn describe(state: State) -> &'static str {
     match state {
         State::Present => "owner is here",
@@ -401,6 +416,11 @@ fn describe(state: State) -> &'static str {
 /// `nodonuts stop`) or SIGINT.
 pub fn run(paths: &Paths) -> Result<()> {
     start_logging(paths)?;
+    // An old log is emptied right away. A config that can't load is
+    // reported by `watch` below; until then, keep the log as it is.
+    if let Ok(config) = config::load(&paths.config_file) {
+        empty_log_if_due(paths, config.logs_maxdays);
+    }
     // Log startup errors too, since nobody sees this process's stderr.
     let result = watch(paths);
     if let Err(error) = &result {
@@ -464,8 +484,16 @@ fn watch(paths: &Paths) -> Result<()> {
     // stopped waiting for it).
     let mut command: Option<runner::RunningCommand> = None;
 
+    // When the log was last checked for `logs_maxdays`. `Instant` is fine
+    // here: this only paces the checks; the age itself uses the wall clock.
+    let mut last_log_check = Instant::now();
+
     let outcome = 'watching: loop {
         while !interrupted() {
+            if last_log_check.elapsed() >= LOG_CHECK_EVERY {
+                last_log_check = Instant::now();
+                empty_log_if_due(paths, config.logs_maxdays);
+            }
             if watcher.tick(SystemTime::now()) {
                 // Hand the camera over to the command (e.g. a script that
                 // takes a photo) and wait for it. No checks happen meanwhile;

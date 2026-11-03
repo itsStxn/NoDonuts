@@ -327,6 +327,7 @@ mod tests {
             face_file: dir.join("face.toml"),
             pid_file: dir.join("pid"),
             log_file: dir.join("log"),
+            log_started_file: dir.join("log_started"),
             autostart_file: dir.join("autostart").join("nodonuts.desktop"),
             stop_result_file: dir.join("last_stop"),
             password_file: dir.join("fallback_checkout.toml"),

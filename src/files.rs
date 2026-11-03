@@ -27,6 +27,8 @@ pub struct Paths {
     pub pid_file: PathBuf,
     /// The watcher's log.
     pub log_file: PathBuf,
+    /// When the log was last emptied (for `logs_maxdays`).
+    pub log_started_file: PathBuf,
     /// The login entry that starts the watcher when `autostart` is on.
     pub autostart_file: PathBuf,
     /// Written by the watcher as it exits: how the stop went (see
@@ -63,6 +65,7 @@ impl Paths {
             face_file: data_dir.join("owner_face.toml"),
             pid_file: data_dir.join("nodonuts.pid"),
             log_file: data_dir.join("nodonuts.log"),
+            log_started_file: data_dir.join("log_started"),
             autostart_file,
             stop_result_file: data_dir.join("last_stop"),
             password_file: data_dir.join("fallback_checkout.toml"),

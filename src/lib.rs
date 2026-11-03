@@ -24,6 +24,7 @@ pub mod daemon;
 pub mod enroll;
 pub mod face;
 pub mod files;
+pub mod logs;
 pub mod password;
 pub mod presence;
 pub mod prompt;
