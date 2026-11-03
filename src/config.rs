@@ -1,14 +1,16 @@
 //! Settings: load, save, validate, get, set and reset `config.toml`.
 
+use crate::alert;
 use crate::files;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
-pub const KEYS: [&str; 14] = [
+pub const KEYS: [&str; 15] = [
     "aggressive_checks",
     "aggressive_mode",
+    "alert_location",
     "autostart",
     "camera",
     "check_every_ms",
@@ -41,6 +43,9 @@ pub struct Config {
     /// If true, run the command immediately (no grace period) when someone
     /// other than the owner is in front of the camera and the owner is not.
     pub aggressive_mode: bool,
+    /// Where `NODONUTS ALERT.txt` goes when the command runs: `desktop`,
+    /// `off` (no alert, no notification), or a folder (`/...` or `~/...`).
+    pub alert_location: String,
     /// If true, the watcher starts by itself when the owner logs in.
     pub autostart: bool,
     /// Which camera to use: `built-in` (the laptop's own), or a camera's
@@ -91,6 +96,7 @@ impl Default for Config {
             // 2 = one misread frame of the owner is not enough to fire.
             aggressive_checks: 2,
             aggressive_mode: false,
+            alert_location: alert::DESKTOP.to_string(),
             autostart: false,
             camera: "built-in".to_string(),
             // Each check costs ~100 ms of CPU (the face models): every
@@ -157,6 +163,10 @@ impl Config {
         if self.logs_maxdays > 3650 {
             bail!("logs_maxdays must be a whole number from 0 (never empty) to 3650");
         }
+        // Only the form here; whether the folder exists is checked by
+        // `config set` (a folder that disappears later must not stop the
+        // watcher from starting: the alert falls back instead).
+        alert::check_setting(&self.alert_location)?;
         // Capped at a minute: `nodonuts stop` waits at most that long for
         // each message from the watcher.
         if !(1..=60_000).contains(&self.pwd_ms) {
@@ -176,6 +186,7 @@ impl Config {
             "check_every_ms" => self.check_every_ms.to_string(),
             "aggressive_mode" => self.aggressive_mode.to_string(),
             "aggressive_checks" => self.aggressive_checks.to_string(),
+            "alert_location" => self.alert_location.clone(),
             "autostart" => self.autostart.to_string(),
             "camera" => self.camera.clone(),
             "face_checkout" => self.face_checkout.to_string(),
@@ -205,6 +216,11 @@ impl Config {
                     .trim()
                     .parse()
                     .with_context(|| format!("{key} must be a whole number of 1 or more"))?
+            }
+            "alert_location" => {
+                let value = value.trim();
+                alert::check_folder(value)?;
+                updated.alert_location = value.to_string();
             }
             "autostart" => updated.autostart = parse_on_off(key, value)?,
             // Chosen from a list of the cameras actually connected, so
@@ -325,6 +341,15 @@ mod tests {
         config.set("logs_maxdays", "0").unwrap();
         config.set("logs_maxdays", "30").unwrap();
         assert_eq!(config.get("logs_maxdays").unwrap(), "30");
+        config.set("alert_location", "off").unwrap();
+        assert_eq!(config.get("alert_location").unwrap(), "off");
+        let mine = std::env::temp_dir().join(format!("nodonuts-alerts-{}", std::process::id()));
+        std::fs::create_dir_all(&mine).unwrap();
+        config
+            .set("alert_location", mine.to_str().unwrap())
+            .unwrap();
+        std::fs::remove_dir_all(&mine).unwrap();
+        config.set("alert_location", "desktop").unwrap();
         config.set("pwd_ms", "1").unwrap();
         config.set("pwd_ms", "60000").unwrap();
         config.set("pwd_ms", "2500").unwrap();
@@ -419,6 +444,9 @@ mod tests {
             ("logs_maxdays", "-1"),
             ("logs_maxdays", "1.5"),
             ("logs_maxdays", "3651"),
+            ("alert_location", ""),
+            ("alert_location", "alerts"),
+            ("alert_location", "/no/such/folder/for/nodonuts"),
             ("pwd_ms", "0"),
             ("pwd_ms", "60001"),
             ("pwd_ms", "1.5"),
@@ -454,6 +482,12 @@ mod tests {
         assert!(config.command_once);
         assert_eq!(config.aggressive_checks, 2);
         assert_eq!(config.pwd_ms, 3000);
+        assert_eq!(config.alert_location, "desktop");
+        // A hand-edited file with a relative path doesn't load.
+        assert!(Config::from_toml("alert_location = 'alerts'").is_err());
+        // A full path that doesn't exist (yet) does: the alert falls back.
+        let config = Config::from_toml("alert_location = '/no/such/folder'").unwrap();
+        assert_eq!(config.alert_location, "/no/such/folder");
     }
 
     #[test]

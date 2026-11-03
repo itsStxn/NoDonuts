@@ -129,6 +129,9 @@ rm -rf ~/.config/nodonuts ~/.local/share/nodonuts         # Linux
 rm -rf ~/Library/Application\ Support/nodonuts            # macOS
 ```
 
+If your command ever ran, also delete `NODONUTS ALERT.txt` from your desktop
+(or from your `alert_location` folder).
+
 To delete the source too: `rm -rf ~/NoDonuts`.
 
 ## Camera access
@@ -165,3 +168,4 @@ To delete the source too: `rm -rf ~/NoDonuts`.
 | Fallback password (hash only) | `~/.local/share/nodonuts/fallback_checkout.toml` | `~/Library/Application Support/nodonuts/fallback_checkout.toml` |
 | Log | `~/.local/share/nodonuts/nodonuts.log` | `~/Library/Application Support/nodonuts/nodonuts.log` |
 | Login entry (`autostart`) | `~/.config/autostart/nodonuts.desktop` | `~/Library/LaunchAgents/com.amazon.nodonuts.plist` |
+| Alert (`alert_location`), written when your command runs | `~/Desktop/NODONUTS ALERT.txt` | `~/Desktop/NODONUTS ALERT.txt` |

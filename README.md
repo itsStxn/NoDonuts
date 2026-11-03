@@ -43,7 +43,7 @@ macOS lock example: `pmset displaysleepnow`.
 | `nodonuts enroll` | Guides you through 4 poses (10 shots) and saves your face (see [Enrolling](#enrolling)) |
 | `nodonuts start` | Starts the background watcher. Only one can run: a second `start` (even at the same moment, e.g. with autostart) says it's already watching |
 | `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face, or the fallback password) |
-| `nodonuts status` | Shows whether it is running (and its PID), whether it starts at login, and whether a fallback password is set |
+| `nodonuts status` | Shows whether it is running (and its PID), the last alert if its file is still there, whether it starts at login, and whether a fallback password is set |
 | `nodonuts camera` | Lists the usable cameras and lets you choose one (see [Choosing a camera](#choosing-a-camera)). Only while the watcher is stopped |
 | `nodonuts password` | Sets or changes the fallback password (`--remove` to delete it). Only while the watcher is stopped |
 | `nodonuts refresh` | Updates the login entry to match `autostart`, pointing at the copy you run it from. Only while the watcher is stopped |
@@ -66,6 +66,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 |---|---|---|
 | `aggressive_checks` | `2` | Aggressive mode fires after this many checks in a row see another face and not yours (1 or more). Counted in checks of `check_every_ms`: the default is 2 x 1000 ms, about 2 s |
 | `aggressive_mode` | `false` | `true` = run the command without waiting for the grace period when another face is seen and yours is not |
+| `alert_location` | `desktop` | Where `NODONUTS ALERT.txt` goes when your command runs: `desktop`, a folder (`/...` or `~/...`, must exist and be yours), or `off` (no alert and no notification). See [The alert](#the-alert-alert_location) |
 | `autostart` | `false` | `true` = start the watcher automatically when you log in |
 | `camera` | `built-in` | Which camera to use: `built-in` (the laptop's own) or a camera's name. Choose it with `nodonuts camera`, not `config set` |
 | `check_every_ms` | `1000` | How often the camera is checked. Each check costs about 100 ms of CPU, so this sets how busy NoDonuts is: about 10% of one core at 1000, 20% at 500, 6% at 2000. Checking less often also makes aggressive mode and the face checkout slower (see `aggressive_checks` and `face_checks`) |
@@ -181,6 +182,64 @@ locked out, but autostart is off afterwards too, until you turn it back on.
 
 With `command_once = false`, the watcher keeps going after the command, and
 fires again after your next absence.
+
+## The alert (`alert_location`)
+
+With a lock command, all you see when you come back is a locked screen,
+which looks the same as locking it yourself. So whenever your command runs,
+NoDonuts also tells you:
+
+- **A file on your desktop, `NODONUTS ALERT.txt`,** with one entry per run:
+  ```
+  === NoDonuts ran your command ===
+  When:       2026-11-03 14:32:07
+  Why:        someone else was at the laptop for 2 checks in a row (aggressive mode)
+  Command:    loginctl lock-session
+  Afterwards: NoDonuts stopped and turned autostart off (command_once). ...
+  Full log:   /home/you/.local/share/nodonuts/nodonuts.log
+  ```
+  New runs are added at the end, so you'll see if it ran three times while
+  you were in a meeting. **Delete the file once you've read it.**
+- **A desktop notification** ("NODONUTS ALERT"). On Linux it stays on
+  screen until dismissed, and GNOME keeps it in its notification list, so
+  it's there after you unlock.
+- **A line in `nodonuts status`:**
+  `Last alert: 2026-11-03 14:32:07, aggressive mode (see .../NODONUTS ALERT.txt)`,
+  until you delete the file.
+
+All three happen just *before* the command runs, so a `reboot` or logout
+can't skip them.
+
+**Choosing the folder** (while the watcher is stopped, like any setting):
+
+```bash
+nodonuts config set alert_location desktop             # the default
+nodonuts config set alert_location ~/Documents/alerts  # any folder of yours
+nodonuts config set alert_location off                 # no file, no notification
+```
+
+- `desktop` is your desktop folder as the system knows it (`~/Desktop`,
+  or e.g. `~/Bureau` on a French Ubuntu).
+- A folder must be a full path (`/...` or `~/...`), already exist and be
+  yours. Relative paths are refused: the watcher doesn't run from your
+  terminal's folder, so they'd point somewhere unexpected.
+- Changing the folder doesn't move an existing alert file; new alerts go
+  to the new folder.
+- If the folder is gone when the command runs (e.g. an unplugged drive),
+  the alert goes to the NoDonuts data folder (`~/.local/share/nodonuts/` on
+  Linux) and the log says so. It's never silently lost.
+
+**Good to know:**
+
+- On Ubuntu, files on the desktop are shown by the Desktop Icons extension,
+  which is on by default. If you've turned it off, the file is still in
+  `~/Desktop`, just not on screen; the notification and `status` still
+  tell you.
+- With a command that doesn't lock you out (like the default `echo`),
+  whoever is at the laptop can simply delete the file. The alert is meant
+  for the lock-out case.
+- It says *that* the command ran and why, not who was there: no photos are
+  ever taken.
 
 ## How it behaves
 
@@ -461,6 +520,7 @@ Code layout (`src/`):
 | `enroll.rs` | Enrollment and the saved face embedding |
 | `files.rs` | File locations and private-permission checks |
 | `logs.rs` | Empties the log once it's older than `logs_maxdays` |
+| `alert.rs` | The alert when the command runs: `NODONUTS ALERT.txt`, the notification, the `status` line |
 | `autostart.rs` | The login entry behind the `autostart` setting |
 | `control.rs` | The conversation between `nodonuts stop` and the watcher, over a local socket |
 | `password.rs` | The fallback password: Argon2 hash, save, load, verify |

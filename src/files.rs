@@ -42,6 +42,8 @@ pub struct Paths {
     pub password_file: PathBuf,
     /// The local socket `nodonuts stop` uses to talk to the watcher.
     pub control_socket: PathBuf,
+    /// Where the last alert file was written, and when, for `status`.
+    pub last_alert_file: PathBuf,
 }
 
 impl Paths {
@@ -75,7 +77,26 @@ impl Paths {
             stop_result_file: data_dir.join("last_stop"),
             password_file: data_dir.join("fallback_checkout.toml"),
             control_socket: data_dir.join("control.sock"),
+            last_alert_file: data_dir.join("last_alert"),
         })
+    }
+
+    /// Every file in one folder, for tests (nothing touches the real ones).
+    #[cfg(test)]
+    pub(crate) fn in_dir(dir: &Path) -> Paths {
+        Paths {
+            config_file: dir.join("config.toml"),
+            face_file: dir.join("face.toml"),
+            pid_file: dir.join("pid"),
+            lock_file: dir.join("nodonuts.lock"),
+            log_file: dir.join("nodonuts.log"),
+            log_started_file: dir.join("log_started"),
+            autostart_file: dir.join("autostart").join("nodonuts.desktop"),
+            stop_result_file: dir.join("last_stop"),
+            password_file: dir.join("fallback_checkout.toml"),
+            control_socket: dir.join("control.sock"),
+            last_alert_file: dir.join("last_alert"),
+        }
     }
 }
 

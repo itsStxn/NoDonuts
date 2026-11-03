@@ -17,7 +17,8 @@
 //!          >= threshold_owner   : owner
 //!          <  threshold_stranger: stranger   (in between: unsure)
 //!     -> presence state machine (grace period, aggressive mode, wake)
-//!     -> fire? release the camera, run the command, wait for it
+//!     -> fire? raise the alert (file + notification), release the camera,
+//!        run the command, wait for it
 //!     every ~60 s: empty the log if older than logs_maxdays
 //!
 //! stop (`nodonuts stop`, over control.sock):
@@ -31,6 +32,7 @@
 //! ```
 
 // Each `pub mod` line pulls in the file `src/<name>.rs`.
+pub mod alert;
 pub mod autostart;
 pub mod camera;
 pub mod cli;

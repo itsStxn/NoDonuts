@@ -6,6 +6,7 @@
 //! `stop` asks the watcher to stop over its control socket (see `control`),
 //! falling back to `SIGTERM` if that socket isn't there.
 
+use crate::alert;
 use crate::autostart;
 use crate::config;
 use crate::control::{Reply, STOP_REQUEST};
@@ -275,6 +276,10 @@ pub fn status(paths: &Paths) -> Result<()> {
                 );
             }
         }
+    }
+    // Shown until the owner deletes the alert file (= read it).
+    if let Some((time, reason, file)) = alert::last(paths) {
+        println!("Last alert: {time}, {reason} (see {})", file.display());
     }
     print_autostart_status(paths);
     match password::load(&paths.password_file) {

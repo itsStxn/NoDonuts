@@ -2,6 +2,7 @@
 //!
 //! This is what `nodonuts watch` runs in the background.
 
+use crate::alert;
 use crate::autostart;
 use crate::camera::{FrameSource, Webcam};
 use crate::config::{self, Config};
@@ -87,20 +88,31 @@ impl Watcher {
         self.tracker.state
     }
 
-    /// One check at time `now`. Returns true if the command should run.
-    pub fn tick(&mut self, now: SystemTime) -> bool {
+    /// One check at time `now`. Returns why the command should run now, or
+    /// `None` if it shouldn't.
+    pub fn tick(&mut self, now: SystemTime) -> Option<alert::Reason> {
         let seen = self.look();
         let (next, fire) = presence::next(self.tracker, seen, now, &self.rules);
-        if fire && self.rules.intrusion_confirmed(seen, next.stranger_streak) {
+        let reason = if !fire {
+            None
+        } else if self.rules.intrusion_confirmed(seen, next.stranger_streak) {
+            Some(alert::Reason::Aggressive {
+                checks: next.stranger_streak,
+            })
+        } else {
+            Some(alert::Reason::GracePeriod {
+                seconds: self.rules.grace.as_secs(),
+            })
+        };
+        if let Some(alert::Reason::Aggressive { checks }) = reason {
             log::info!(
-                "someone else is at the laptop for {} checks in a row (aggressive mode)",
-                next.stranger_streak
+                "someone else is at the laptop for {checks} checks in a row (aggressive mode)"
             );
         } else if next.state != self.tracker.state {
             log::info!("{}", describe(next.state));
         }
         self.tracker = next;
-        fire
+        reason
     }
 
     /// Records that the laptop is awake at `now`. Called right before
@@ -430,6 +442,34 @@ fn stop_signals() -> Vec<i32> {
     signals
 }
 
+/// Everything that must happen *before* the command runs, because a
+/// command like `reboot` or a logout may end this process before it could
+/// do it afterwards: with `command_once`, turn autostart off; then raise
+/// the alert (file + notification) so the owner learns the command ran.
+fn before_command(paths: &Paths, config: &Config, reason: alert::Reason) {
+    if config.command_once {
+        turn_autostart_off(paths);
+    }
+    alert::raise(
+        paths,
+        &config.alert_location,
+        reason,
+        &config.command,
+        afterwards(config, reason),
+    );
+}
+
+/// What the watcher does once the command has run, for the alert.
+fn afterwards(config: &Config, reason: alert::Reason) -> alert::Afterwards {
+    if config.command_once {
+        alert::Afterwards::StopsOnce
+    } else if reason == alert::Reason::StopSignal {
+        alert::Afterwards::Stops
+    } else {
+        alert::Afterwards::KeepsWatching
+    }
+}
+
 /// `command_once`: turns autostart off, both the setting and the login
 /// entry, so the next login doesn't start a watcher that would run the
 /// command again (e.g. a reboot loop when the owner isn't recognized).
@@ -589,10 +629,8 @@ fn watch(paths: &Paths) -> Result<()> {
                 last_log_check = Instant::now();
                 empty_log_if_due(paths, config.logs_maxdays);
             }
-            if watcher.tick(SystemTime::now()) {
-                if config.command_once {
-                    turn_autostart_off(paths);
-                }
+            if let Some(reason) = watcher.tick(SystemTime::now()) {
+                before_command(paths, &config, reason);
                 // Hand the camera over to the command (e.g. a script that
                 // takes a photo) and wait for it. No checks happen meanwhile;
                 // the command only runs once per absence, so nothing is
@@ -633,16 +671,19 @@ fn watch(paths: &Paths) -> Result<()> {
                     None => {}
                     // Checkout failed: run the command, keep watching.
                     Some(StopOutcome::Denied) => {
-                        if config.command_once {
-                            turn_autostart_off(paths);
-                        }
                         let still_running = command.as_ref().is_some_and(|c| !c.is_done());
                         if still_running {
                             log::warn!(
                                 "stop refused: owner not recognized; the command is already running"
                             );
+                            // No new run, so no new alert; but the watcher
+                            // still ends below with `command_once`.
+                            if config.command_once {
+                                turn_autostart_off(paths);
+                            }
                         } else {
                             log::warn!("stop refused: owner not recognized; running the command");
+                            before_command(paths, &config, alert::Reason::StopRefused);
                             watcher.release_camera();
                             let running = runner::start(&config.command);
                             running.wait_unless(&interrupted);
@@ -674,16 +715,17 @@ fn watch(paths: &Paths) -> Result<()> {
             log::info!("the command ran; stopping (command_once)");
         }
         StopOutcome::OwnerNotSeen => {
-            if config.command_once {
-                turn_autostart_off(paths);
-            }
             if command_still_running {
                 // Running a second copy wouldn't add anything.
                 log::warn!(
                     "stop requested but the owner was not seen; the command is already running"
                 );
+                if config.command_once {
+                    turn_autostart_off(paths);
+                }
             } else {
                 log::warn!("stop requested but the owner was not seen; running the command first");
+                before_command(paths, &config, alert::Reason::StopSignal);
                 watcher.release_camera();
                 runner::run_and_wait(&config.command, COMMAND_WAIT_BEFORE_EXIT);
             }
@@ -871,7 +913,7 @@ mod tests {
         let mut fired_at = Vec::new();
         for second in 0..seconds {
             let now = start + Duration::from_secs(second);
-            if watcher.tick(now) {
+            if watcher.tick(now).is_some() {
                 fired_at.push(second);
             }
             watcher.mark_awake(now);
@@ -943,6 +985,50 @@ mod tests {
         // Stranger from 2 s: 1st check at 2 s, 2nd (confirming) at 3 s.
         let mut w = watcher(vec![Owner, Owner, Stranger], 30, true);
         assert_eq!(run_seconds(&mut w, 10), vec![3]);
+    }
+
+    /// The reason of the first fire, ticking once a second.
+    fn first_fire_reason(watcher: &mut Watcher, seconds: u64) -> Option<alert::Reason> {
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        (0..seconds).find_map(|second| {
+            let now = start + Duration::from_secs(second);
+            let reason = watcher.tick(now);
+            watcher.mark_awake(now);
+            reason
+        })
+    }
+
+    #[test]
+    fn tick_says_why_it_fired() {
+        let mut w = watcher(vec![Owner, Empty], 3, true);
+        assert_eq!(
+            first_fire_reason(&mut w, 20),
+            Some(alert::Reason::GracePeriod { seconds: 3 })
+        );
+        let mut w = watcher(vec![Owner, Stranger], 30, true);
+        assert_eq!(
+            first_fire_reason(&mut w, 20),
+            Some(alert::Reason::Aggressive { checks: 2 })
+        );
+    }
+
+    #[test]
+    fn the_alert_says_what_happens_next() {
+        use alert::{Afterwards, Reason};
+        let once = Config::default(); // command_once on
+        let repeat = Config {
+            command_once: false,
+            ..Config::default()
+        };
+        let grace = Reason::GracePeriod { seconds: 30 };
+        assert_eq!(afterwards(&once, grace), Afterwards::StopsOnce);
+        assert_eq!(afterwards(&once, Reason::StopSignal), Afterwards::StopsOnce);
+        assert_eq!(afterwards(&repeat, grace), Afterwards::KeepsWatching);
+        assert_eq!(
+            afterwards(&repeat, Reason::StopRefused),
+            Afterwards::KeepsWatching
+        );
+        assert_eq!(afterwards(&repeat, Reason::StopSignal), Afterwards::Stops);
     }
 
     #[test]
@@ -1418,18 +1504,7 @@ mod tests {
     #[test]
     fn command_once_turns_autostart_off_setting_and_entry() {
         let dir = std::env::temp_dir().join(format!("nodonuts-once-{}", std::process::id()));
-        let paths = Paths {
-            config_file: dir.join("config.toml"),
-            face_file: dir.join("face.toml"),
-            pid_file: dir.join("pid"),
-            lock_file: dir.join("nodonuts.lock"),
-            log_file: dir.join("log"),
-            log_started_file: dir.join("log_started"),
-            autostart_file: dir.join("autostart").join("nodonuts.desktop"),
-            stop_result_file: dir.join("last_stop"),
-            password_file: dir.join("fallback_checkout.toml"),
-            control_socket: dir.join("control.sock"),
-        };
+        let paths = Paths::in_dir(&dir);
         let settings = Config {
             autostart: true,
             grace_seconds: 45,
