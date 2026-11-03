@@ -5,6 +5,7 @@ use image::RgbImage;
 use nokhwa::Camera;
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType, Resolution};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -16,6 +17,11 @@ use std::time::Duration;
 pub trait FrameSource {
     /// Returns the most recent frame, as 8-bit RGB.
     fn grab(&mut self) -> Result<RgbImage>;
+
+    /// Closes the camera so other programs can use it. The next `grab`
+    /// opens it again. Sources with nothing to close (like test fakes) can
+    /// keep this default, which does nothing.
+    fn release(&mut self) {}
 }
 
 /// The built-in (first) camera.
@@ -71,10 +77,22 @@ impl FrameSource for Webcam {
             None => bail!("camera is not open"),
         };
         if result.is_err() {
-            // Dropping the camera closes it. The next grab reopens it.
-            self.camera = None;
+            // Close the camera. The next grab reopens it.
+            self.release();
         }
         result
+    }
+
+    fn release(&mut self) {
+        // `take()` leaves `None` behind, so the camera counts as closed
+        // even if closing it goes wrong below.
+        if let Some(camera) = self.camera.take() {
+            // Dropping a `Camera` closes it. nokhwa's drop code can panic if
+            // stopping the stream fails; catch that so the watcher survives.
+            if panic::catch_unwind(AssertUnwindSafe(move || drop(camera))).is_err() {
+                log::warn!("error while closing the camera (ignored)");
+            }
+        }
     }
 }
 

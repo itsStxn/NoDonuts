@@ -2,53 +2,85 @@
 
 use anyhow::{Context, Result};
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
-/// Runs `command` through bash, off the watch loop, and logs the result.
-///
-/// We spawn a thread so a slow command cannot stall the watcher. The thread
-/// waits for the command and logs its exit code and output.
-pub fn run(command: &str) {
-    let command = command.to_string();
-    // `move` hands ownership of `command` to the thread, so it stays alive
-    // as long as the thread needs it.
-    thread::spawn(move || {
-        if let Err(error) = run_and_log(&command) {
-            log::error!("failed to run command: {error:#}");
-        }
-    });
+/// How a command ended, as far as the watcher is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandEnd {
+    /// The command finished.
+    Finished,
+    /// We stopped waiting (a stop was requested, or the wait timed out).
+    /// The command keeps running on its own; its output is still logged
+    /// if it finishes before the watcher exits.
+    StillRunning,
 }
 
-/// Runs `command` like [`run`], but waits up to `timeout` for it to finish.
+/// Runs `command` and waits for it to finish, unless `stop` is set first.
+///
+/// The watcher calls this with the camera released, so the command can use
+/// the camera itself (Linux lets only one program use it at a time). It
+/// checks `stop` every 100 ms, so `nodonuts stop` still works while a long
+/// command runs.
+pub fn run_until_done(command: &str, stop: &AtomicBool) -> CommandEnd {
+    let finished = start(command);
+    loop {
+        match finished.recv_timeout(Duration::from_millis(100)) {
+            // `Disconnected` means the thread ended without sending, which
+            // only happens if it panicked: there is nothing left to wait for.
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => return CommandEnd::Finished,
+            Err(RecvTimeoutError::Timeout) => {
+                if stop.load(Ordering::Relaxed) {
+                    log::info!("stop requested while the command is running; not waiting for it");
+                    return CommandEnd::StillRunning;
+                }
+            }
+        }
+    }
+}
+
+/// Runs `command` and waits up to `timeout` for it to finish.
 ///
 /// Used just before the watcher exits: without waiting, the exit could cut
 /// the command off. The wait is capped so a slow command cannot hold up a
-/// logout or shutdown. If it is still running then, we exit anyway; the
-/// command keeps running, but its output is no longer logged.
-pub fn run_and_wait(command: &str, timeout: Duration) {
+/// logout or shutdown.
+pub fn run_and_wait(command: &str, timeout: Duration) -> CommandEnd {
+    match start(command).recv_timeout(timeout) {
+        Ok(()) | Err(RecvTimeoutError::Disconnected) => CommandEnd::Finished,
+        Err(RecvTimeoutError::Timeout) => {
+            log::warn!(
+                "command still running after {} s; not waiting any longer",
+                timeout.as_secs()
+            );
+            CommandEnd::StillRunning
+        }
+    }
+}
+
+/// Starts `command` on its own thread, which logs its result. Returns a
+/// channel that receives one message when the command is done.
+fn start(command: &str) -> Receiver<()> {
     let command = command.to_string();
-    // A channel: the thread sends one message when the command is done.
     let (done, finished) = mpsc::channel();
+    // `move` hands ownership of `command` and `done` to the thread.
     thread::spawn(move || {
         if let Err(error) = run_and_log(&command) {
             log::error!("failed to run command: {error:#}");
         }
-        // Ignore send errors: they only mean we stopped waiting.
+        // Ignore send errors: they only mean nobody is waiting any more.
         let _ = done.send(());
     });
-    if finished.recv_timeout(timeout).is_err() {
-        log::warn!(
-            "command still running after {} s; not waiting any longer",
-            timeout.as_secs()
-        );
-    }
+    finished
 }
 
 fn run_and_log(command: &str) -> Result<()> {
     log::info!("running command: {command}");
     // `bash -c "<command>"` runs the whole string as the owner wrote it.
+    // `output()` waits until the command exits *and* closes its output, so
+    // a command that leaves something running in the background (`... &`)
+    // counts as running until that background part closes its output too.
     let output = Command::new("bash")
         .arg("-c")
         .arg(command)
@@ -70,5 +102,61 @@ fn log_stream(name: &str, bytes: &[u8]) {
     let text = text.trim();
     if !text.is_empty() {
         log::info!("command {name}: {text}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn waits_for_the_command_to_finish() {
+        let stop = AtomicBool::new(false);
+        let started = Instant::now();
+        assert_eq!(run_until_done("sleep 0.3", &stop), CommandEnd::Finished);
+        assert!(started.elapsed() >= Duration::from_millis(300));
+    }
+
+    #[test]
+    fn a_stop_ends_the_wait_early() {
+        let stop = AtomicBool::new(true);
+        let started = Instant::now();
+        assert_eq!(run_until_done("sleep 5", &stop), CommandEnd::StillRunning);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_failing_command_still_counts_as_finished() {
+        let stop = AtomicBool::new(false);
+        assert_eq!(run_until_done("exit 3", &stop), CommandEnd::Finished);
+        assert_eq!(
+            run_until_done("no-such-command-xyz", &stop),
+            CommandEnd::Finished
+        );
+    }
+
+    #[test]
+    fn background_with_redirect_does_not_hold_the_wait() {
+        // The documented way to run something without pausing the watcher.
+        let stop = AtomicBool::new(false);
+        let started = Instant::now();
+        assert_eq!(
+            run_until_done("sleep 5 >/dev/null 2>&1 &", &stop),
+            CommandEnd::Finished
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn run_and_wait_gives_up_after_the_timeout() {
+        assert_eq!(
+            run_and_wait("sleep 5", Duration::from_millis(200)),
+            CommandEnd::StillRunning
+        );
+        assert_eq!(
+            run_and_wait("true", Duration::from_secs(5)),
+            CommandEnd::Finished
+        );
     }
 }

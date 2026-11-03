@@ -131,6 +131,12 @@ impl Watcher {
         }
     }
 
+    /// Closes the camera so the owner's command can use it. The next check
+    /// opens it again.
+    pub fn release_camera(&mut self) {
+        self.camera.release();
+    }
+
     /// `face_checkout`: decides how a stop request ends. Looks at the camera
     /// up to `attempts` times, `pause` apart, and stops looking as soon as
     /// the owner is seen.
@@ -266,10 +272,20 @@ fn watch(paths: &Paths) -> Result<()> {
         if config.face_checkout { "on" } else { "off" },
     );
 
+    // Is the owner's command still running? Only true if a stop arrived
+    // while waiting for it.
+    let mut command_running = false;
     while !stop.load(Ordering::Relaxed) {
         if watcher.tick(SystemTime::now()) {
-            runner::run(&config.command);
+            // Hand the camera over to the command (e.g. a script that takes
+            // a photo) and wait for it. No checks happen meanwhile; the
+            // command only runs once per absence, so nothing is missed.
+            watcher.release_camera();
+            log::info!("camera released until the command finishes");
+            command_running =
+                runner::run_until_done(&config.command, &stop) == runner::CommandEnd::StillRunning;
         }
+        // After the command: its run time is not mistaken for a sleep gap.
         watcher.mark_awake(SystemTime::now());
         sleep_unless_stopped(interval, &stop);
     }
@@ -285,8 +301,13 @@ fn watch(paths: &Paths) -> Result<()> {
     match outcome {
         StopOutcome::Unchecked => {}
         StopOutcome::OwnerConfirmed => log::info!("owner recognized; stopping"),
+        StopOutcome::OwnerNotSeen if command_running => {
+            // Running a second copy wouldn't add anything.
+            log::warn!("stop requested but the owner was not seen; the command is already running");
+        }
         StopOutcome::OwnerNotSeen => {
             log::warn!("stop requested but the owner was not seen; running the command first");
+            watcher.release_camera();
             runner::run_and_wait(&config.command, COMMAND_WAIT_BEFORE_EXIT);
         }
     }
@@ -566,6 +587,48 @@ mod tests {
             w.check_before_stop(12, Duration::ZERO),
             StopOutcome::OwnerConfirmed
         );
+    }
+
+    #[test]
+    fn release_camera_closes_it_and_checks_carry_on_afterwards() {
+        /// A camera that records whether it is open.
+        struct TrackedCamera {
+            open: Rc<Cell<bool>>,
+            releases: Rc<Cell<u32>>,
+        }
+        impl FrameSource for TrackedCamera {
+            fn grab(&mut self) -> Result<RgbImage> {
+                self.open.set(true);
+                Ok(RgbImage::new(4, 4))
+            }
+            fn release(&mut self) {
+                self.open.set(false);
+                self.releases.set(self.releases.get() + 1);
+            }
+        }
+        let open = Rc::new(Cell::new(false));
+        let releases = Rc::new(Cell::new(0));
+        let camera = TrackedCamera {
+            open: Rc::clone(&open),
+            releases: Rc::clone(&releases),
+        };
+        let finder = FakeFinder {
+            current: Rc::new(Cell::new(Owner)),
+        };
+        let mut w = Watcher::new(
+            Box::new(camera),
+            Box::new(finder),
+            unit_vector(0),
+            &Config::default(),
+        );
+        run_seconds(&mut w, 1);
+        assert!(open.get(), "a check opens the camera");
+        w.release_camera();
+        assert!(!open.get(), "released for the command");
+        assert_eq!(releases.get(), 1);
+        run_seconds(&mut w, 1);
+        assert!(open.get(), "the next check reopens it");
+        assert_eq!(w.state(), State::Present);
     }
 
     #[test]

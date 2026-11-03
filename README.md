@@ -69,9 +69,28 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 
 ## How the command runs
 
-NoDonuts runs your command with `bash -c "<command>"`, in the background,
-and logs its exit code and output. That is a **non-interactive** shell, so it
-does not read `~/.bashrc`, `~/.zshrc` or similar files:
+NoDonuts runs your command with `bash -c "<command>"` and logs its exit code
+and output.
+
+**The camera is free while your command runs.** NoDonuts closes the camera,
+waits for the command to finish, then reopens it and carries on watching. So
+your command can use the camera itself, e.g. a script that takes a photo of
+whoever is at your laptop. This matters on Linux, where only one program can
+use the camera at a time.
+
+- No checks happen while the command runs. That's fine: it only runs once
+  per absence, and watching picks up again (to re-arm when you're back) as
+  soon as it's done.
+- A command that never finishes pauses watching for good, so make sure your
+  script exits. To start something that keeps running without holding
+  NoDonuts up, send it to the background with its output redirected:
+  `my-long-thing >/dev/null 2>&1 &`. Without the redirect, NoDonuts still
+  waits for it, because it waits for the command's output to close too.
+- `nodonuts stop` still works while a command runs. NoDonuts stops waiting,
+  and it won't start a second copy of a command that's still running.
+
+It's a **non-interactive** shell, so it doesn't read `~/.bashrc`, `~/.zshrc`
+or similar files:
 
 - **Aliases and shell functions are not available.** With
   `alias lock='loginctl lock-session'` in your `.bashrc`, the command `lock`
