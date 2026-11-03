@@ -16,7 +16,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let paths = Paths::locate()?;
     match cli.command {
-        Command::Enroll => enroll::run(&paths),
+        Command::Enroll { remove: false } => enroll::run(&paths),
+        Command::Enroll { remove: true } => remove_face(&paths),
         Command::Start => daemon::start(&paths),
         Command::Stop => daemon::stop(&paths),
         Command::Status => daemon::status(&paths),
@@ -175,6 +176,27 @@ fn set_password(paths: &Paths, remove: bool) -> Result<()> {
     let typed = prompt::ask_new_password()?;
     password::save(&paths.password_file, &typed)?;
     println!("Fallback password saved.");
+    Ok(())
+}
+
+/// `nodonuts enroll --remove`: delete the enrolled face. Refused while the
+/// watcher runs, like enrolling (it loaded the face at start anyway, so
+/// deleting the file wouldn't change what it recognizes).
+fn remove_face(paths: &Paths) -> Result<()> {
+    refuse_while_running(paths, "the enrolled face")?;
+    if !enroll::remove(&paths.face_file)? {
+        println!("No face was enrolled.");
+        return Ok(());
+    }
+    println!("Enrolled face removed.");
+    println!("`nodonuts start` will refuse until you enroll again (`nodonuts enroll`).");
+    // Autostart would quietly fail at every login without a face.
+    if config::load(&paths.config_file).is_ok_and(|config| config.autostart) {
+        println!(
+            "Note: autostart is on, but nothing will start at login until you enroll again \
+             (or turn it off: `nodonuts config set autostart false`)."
+        );
+    }
     Ok(())
 }
 

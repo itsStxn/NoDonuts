@@ -21,7 +21,8 @@ if you don't use Brazil CLI.
 - **Nothing leaves the laptop.** NoDonuts makes no network connections. The
   face models are built into the binary, so even they are not downloaded.
 - **The embedding file is private** (`0600`, readable only by you), and you can
-  delete it at any time (see [Where files live](INSTALLATION.md#where-files-live)).
+  delete it at any time with `nodonuts enroll --remove` (see also
+  [Where files live](INSTALLATION.md#where-files-live)).
 
 ## Quick start
 
@@ -41,6 +42,7 @@ macOS lock example: `pmset displaysleepnow`.
 | Command | Does |
 |---|---|
 | `nodonuts enroll` | Guides you through 4 poses (10 shots) and saves your face (see [Enrolling](#enrolling)) |
+| `nodonuts enroll --remove` | Deletes your enrolled face. `start` then refuses until you enroll again. Only while the watcher is stopped |
 | `nodonuts start` | Starts the background watcher. Only one can run: a second `start` (even at the same moment, e.g. with autostart) says it's already watching |
 | `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face, or the fallback password) |
 | `nodonuts status` | Shows whether it is running (and its PID), the last alert if its file is still there, whether it starts at login, and whether a fallback password is set |

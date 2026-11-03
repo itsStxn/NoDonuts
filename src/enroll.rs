@@ -282,6 +282,16 @@ pub fn load(path: &Path) -> Result<Vec<Embedding>> {
     Ok(poses)
 }
 
+/// `nodonuts enroll --remove`: deletes the enrolled face. Returns false if
+/// none was enrolled.
+pub fn remove(path: &Path) -> Result<bool> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("could not remove {}", path.display())),
+    }
+}
+
 fn check_poses(poses: &[Embedding]) -> Result<()> {
     if poses.is_empty() || poses.len() > MAX_POSES {
         bail!("expected 1 to {MAX_POSES} poses, got {}", poses.len());
@@ -302,6 +312,19 @@ mod tests {
         let mut e = vec![0.0; face::EMBEDDING_LEN];
         e[axis] = 1.0;
         e
+    }
+
+    #[test]
+    fn remove_deletes_the_face_and_is_harmless_when_none() {
+        let path = std::env::temp_dir()
+            .join(format!("nodonuts-remove-face-{}", std::process::id()))
+            .join("owner_face.toml");
+        save(&path, &[unit_vector(0)]).unwrap();
+        assert!(remove(&path).unwrap(), "removed");
+        assert!(!path.exists());
+        assert!(load(&path).is_err(), "nothing enrolled any more");
+        assert!(!remove(&path).unwrap(), "nothing to remove");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     const NO_WAIT: Timing = Timing {

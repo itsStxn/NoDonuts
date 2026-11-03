@@ -19,7 +19,11 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Learn the owner's face. Sit in front of the camera and look at it.
-    Enroll,
+    Enroll {
+        /// Delete the enrolled face instead.
+        #[arg(long)]
+        remove: bool,
+    },
     /// Start watching in the background.
     Start,
     /// Stop watching.
