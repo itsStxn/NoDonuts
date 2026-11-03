@@ -272,6 +272,10 @@ light, an odd angle, or (on Linux) a video call holding the camera.
   (closing a terminal) is ignored, as before.
 - **What can't be blocked:** `kill -9`, `kill -STOP`, and crash signals such
   as `kill -SEGV`. No program can catch these.
+- **`nodonuts stop` never forces its way past the check.** It only
+  force-kills a watcher that confirmed a quiet stop (your face, your
+  password, or `face_checkout` off) and then got stuck on its way out. If
+  the watcher doesn't answer, `nodonuts stop` leaves it running and says so.
 - **It also happens on logout and shutdown.** The system asks every program
   to stop, so if you're not in front of the camera then, your command runs.
   Logout waits for it: the face checkout, plus up to 5 s for your command.

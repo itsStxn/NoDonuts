@@ -132,7 +132,20 @@ pub fn stop(paths: &Paths) -> Result<()> {
         thread::sleep(Duration::from_millis(100));
     }
     if is_alive(pid) {
-        // It did not exit in time (e.g. stuck on the camera). Force it.
+        if !may_force_stop(outcome.as_deref()) {
+            // No confirmed answer (the conversation broke, the watcher went
+            // quiet, or only a signal could be sent). Killing it now would
+            // end it without the face checkout and without the command, so
+            // leave it running.
+            println!(
+                "NoDonuts didn't confirm the stop and is still running (PID {pid}). \
+                 It wasn't force-stopped, since that would skip the face checkout."
+            );
+            println!("See the log: {}", paths.log_file.display());
+            bail!("not stopped");
+        }
+        // The watcher agreed to stop but is stuck on its way out (e.g. on
+        // the camera). Finishing the job skips nothing.
         signal::kill(target, Signal::SIGKILL).context("could not stop the watcher")?;
         println!("The watcher did not exit in time and was killed.");
     }
@@ -194,6 +207,14 @@ fn talk_to_watcher(connection: UnixStream) -> Option<String> {
         }
     }
     None
+}
+
+/// May `stop` force-kill a watcher that hasn't exited in time? Only if the
+/// watcher itself confirmed a quiet stop over the socket: `owner` or
+/// `password` (the checkout passed), or `unchecked` (`face_checkout` off).
+/// With no confirmed answer, a kill would skip the checkout.
+fn may_force_stop(outcome: Option<&str>) -> bool {
+    matches!(outcome, Some("owner" | "password" | "unchecked"))
 }
 
 fn remove_stop_result(paths: &Paths) {
@@ -290,4 +311,23 @@ fn is_our_watcher(pid: i32) -> bool {
 fn remove_pid_file(paths: &Paths) {
     // Ignore errors: the file may already be gone.
     let _ = std::fs::remove_file(&paths.pid_file);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn force_stop_only_after_a_confirmed_quiet_stop() {
+        // The watcher confirmed it may stop quietly.
+        assert!(may_force_stop(Some("owner")));
+        assert!(may_force_stop(Some("password")));
+        assert!(may_force_stop(Some("unchecked")));
+        // No confirmed answer, or the checkout didn't pass: never.
+        assert!(!may_force_stop(None));
+        assert!(!may_force_stop(Some("command")));
+        assert!(!may_force_stop(Some("denied")));
+        assert!(!may_force_stop(Some("")));
+        assert!(!may_force_stop(Some("garbage")));
+    }
 }
