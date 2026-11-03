@@ -1,7 +1,8 @@
 //! `start`, `stop` and `status`: run the watcher in the background.
 //!
 //! `start` launches this same program again as `nodonuts watch`, detached
-//! from the terminal, and writes the new process ID (PID) to a file.
+//! from the terminal. The watcher takes a lock (so only one runs) and
+//! writes its process ID (PID) to a file.
 //! `stop` asks the watcher to stop over its control socket (see `control`),
 //! falling back to `SIGTERM` if that socket isn't there.
 
@@ -12,6 +13,7 @@ use crate::enroll;
 use crate::files::{self, Paths};
 use crate::password;
 use crate::prompt;
+use crate::watcher;
 use anyhow::{Context, Result, bail};
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
@@ -79,14 +81,21 @@ pub fn start(paths: &Paths) -> Result<()> {
         .process_group(0)
         .spawn()
         .context("could not start the watcher")?;
+    // The watcher writes its own PID file once it holds the single-watcher
+    // lock, so `start` never writes or removes it.
     let pid = child.id();
-    files::write_private(&paths.pid_file, pid.to_string().as_bytes())?;
 
     // If the watcher dies right away (e.g. no camera access), say so.
     let deadline = Instant::now() + STARTUP_CHECK;
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait()? {
-            remove_pid_file(paths);
+            if status.code() == Some(watcher::ALREADY_RUNNING_EXIT_CODE) {
+                // Another `start` (or autostart) won a race with this one.
+                match running_pid(paths)? {
+                    Some(other) => bail!("NoDonuts is already watching (PID {other})"),
+                    None => bail!("NoDonuts is already watching"),
+                }
+            }
             bail!(
                 "the watcher stopped right away ({status}). See the log: {}",
                 paths.log_file.display()

@@ -416,6 +416,16 @@ fn describe(state: State) -> &'static str {
 /// `nodonuts stop`) or SIGINT.
 pub fn run(paths: &Paths) -> Result<()> {
     start_logging(paths)?;
+    // Only one watcher at a time, even if two `nodonuts start` (e.g. a
+    // manual one and autostart) race. Kept until this function returns.
+    let Some(_lock) = files::try_lock(&paths.lock_file)? else {
+        log::warn!("another watcher is already running; this one exits");
+        std::process::exit(ALREADY_RUNNING_EXIT_CODE);
+    };
+    // Written here, while holding the lock, so a losing `start` can never
+    // overwrite the winner's PID.
+    let pid = std::process::id();
+    files::write_private(&paths.pid_file, pid.to_string().as_bytes())?;
     // An old log is emptied right away. A config that can't load is
     // reported by `watch` below; until then, keep the log as it is.
     if let Ok(config) = config::load(&paths.config_file) {
@@ -426,8 +436,18 @@ pub fn run(paths: &Paths) -> Result<()> {
     if let Err(error) = &result {
         log::error!("watcher stopped: {error:#}");
     }
+    // Remove the PID file, but only if it's still ours.
+    let ours =
+        std::fs::read_to_string(&paths.pid_file).is_ok_and(|text| text.trim() == pid.to_string());
+    if ours {
+        let _ = std::fs::remove_file(&paths.pid_file);
+    }
     result
 }
+
+/// How a watcher that finds another one already running exits, so `start`
+/// can tell this apart from a crash.
+pub const ALREADY_RUNNING_EXIT_CODE: i32 = 3;
 
 fn watch(paths: &Paths) -> Result<()> {
     // Settings are read once: a running watcher keeps the settings it

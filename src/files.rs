@@ -6,7 +6,9 @@
 //! others could have tampered with.
 
 use anyhow::{Context, Result, bail};
-use std::fs::{self, DirBuilder, OpenOptions};
+use nix::errno::Errno;
+use nix::fcntl::{Flock, FlockArg};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -23,8 +25,10 @@ pub struct Paths {
     pub config_file: PathBuf,
     /// The owner's face embedding (never a photo).
     pub face_file: PathBuf,
-    /// Holds the process ID of the running watcher.
+    /// Holds the process ID of the running watcher (written by the watcher).
     pub pid_file: PathBuf,
+    /// Locked by the running watcher, so only one can run at a time.
+    pub lock_file: PathBuf,
     /// The watcher's log.
     pub log_file: PathBuf,
     /// When the log was last emptied (for `logs_maxdays`).
@@ -64,6 +68,7 @@ impl Paths {
             config_file: config_dir.join("config.toml"),
             face_file: data_dir.join("owner_face.toml"),
             pid_file: data_dir.join("nodonuts.pid"),
+            lock_file: data_dir.join("nodonuts.lock"),
             log_file: data_dir.join("nodonuts.log"),
             log_started_file: data_dir.join("log_started"),
             autostart_file,
@@ -102,6 +107,29 @@ pub fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
     file.write_all(contents)
         .with_context(|| format!("could not write {}", path.display()))?;
     Ok(())
+}
+
+/// Tries to take an exclusive lock on `path` (created owner-only if
+/// missing). `Ok(None)` means another process holds it.
+///
+/// The lock lasts as long as the returned value is kept, and the OS drops
+/// it when the process ends, even after a crash or `kill -9`, so it can
+/// never go stale. The lock file itself is never deleted: deleting it would
+/// let two processes lock two different files.
+pub fn try_lock(path: &Path) -> Result<Option<Flock<File>>> {
+    create_parent_dir(path)?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(PRIVATE_FILE)
+        .open(path)
+        .with_context(|| format!("could not open {}", path.display()))?;
+    match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+        Ok(lock) => Ok(Some(lock)),
+        Err((_, Errno::EWOULDBLOCK)) => Ok(None),
+        Err((_, error)) => Err(error).with_context(|| format!("could not lock {}", path.display())),
+    }
 }
 
 /// Fails unless `path` is owned by the current user and not writable by
@@ -144,6 +172,21 @@ mod tests {
         let mode = fs::metadata(&path).unwrap().mode() & 0o777;
         assert_eq!(mode, 0o600);
         check_private(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn only_one_holder_of_the_lock_at_a_time() {
+        let path = temp_path("nodonuts.lock");
+        let first = try_lock(&path).unwrap();
+        assert!(first.is_some());
+        // A second try (like a second watcher) is refused while it's held...
+        assert!(try_lock(&path).unwrap().is_none());
+        // ...and succeeds once the first holder lets go (or exits).
+        drop(first);
+        assert!(try_lock(&path).unwrap().is_some());
+        let mode = fs::metadata(&path).unwrap().mode() & 0o777;
+        assert_eq!(mode, 0o600);
         fs::remove_file(&path).unwrap();
     }
 

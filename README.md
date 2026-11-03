@@ -41,7 +41,7 @@ macOS lock example: `pmset displaysleepnow`.
 | Command | Does |
 |---|---|
 | `nodonuts enroll` | Captures 10 frames of your face and saves the average embedding |
-| `nodonuts start` | Starts the background watcher |
+| `nodonuts start` | Starts the background watcher. Only one can run: a second `start` (even at the same moment, e.g. with autostart) says it's already watching |
 | `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face, or the fallback password) |
 | `nodonuts status` | Shows whether it is running (and its PID), whether it starts at login, and whether a fallback password is set |
 | `nodonuts password` | Sets or changes the fallback password (`--remove` to delete it). Only while the watcher is stopped |
