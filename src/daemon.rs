@@ -38,7 +38,10 @@ pub fn start(paths: &Paths) -> Result<()> {
     // quietly point autostart at them. Only `config set autostart` and
     // `refresh` change it.
     if let Some(problem) = autostart::problem(paths, config.autostart) {
-        eprintln!("warning: {problem}. Fix: run `nodonuts refresh`.");
+        eprintln!(
+            "warning: {problem}. Fix: `nodonuts stop`, then `nodonuts refresh`, \
+             then `nodonuts start`."
+        );
     }
 
     let program = std::env::current_exe().context("could not find the nodonuts program")?;
@@ -132,7 +135,8 @@ pub fn status(paths: &Paths) -> Result<()> {
 /// The "Starts at login" line of `status`, with a warning when the login
 /// entry points at a program that is no longer there.
 fn print_autostart_status(paths: &Paths) {
-    let fix = "Fix: run `nodonuts refresh` from the copy you want started at login.";
+    let fix = "Fix: run `nodonuts refresh` from the copy you want started at login \
+               (stop the watcher first if it's running).";
     match autostart::stored_program(paths) {
         Ok(None) => println!("Starts at login: no"),
         Ok(Some(program)) if program.is_file() => {

@@ -122,7 +122,8 @@ Your enrolled face and settings are kept.
 - Re-enroll (`nodonuts enroll`) only if an update replaces the face model
   (`models/sface.onnx`).
 - **Moving the program:** `autostart` stores the program's full path. If you
-  move `nodonuts`, run `nodonuts refresh` from its new location.
+  move `nodonuts`, stop the watcher, then run `nodonuts refresh` from its
+  new location.
   `nodonuts status` warns when the stored path is broken.
 
 ## Uninstall

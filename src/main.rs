@@ -36,7 +36,7 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
             println!("{}", config.get(&key)?);
         }
         ConfigAction::Set { key, value } => {
-            refuse_while_running(paths)?;
+            refuse_while_running(paths, "settings")?;
             let mut config = config::load(&paths.config_file)?;
             config.set(&key, &value)?;
             config::save(&paths.config_file, &config)?;
@@ -46,7 +46,7 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
             }
         }
         ConfigAction::Reset => {
-            refuse_while_running(paths)?;
+            refuse_while_running(paths, "settings")?;
             config::save(&paths.config_file, &Config::default())?;
             println!("Settings reset to defaults.");
             apply_autostart(paths, false)?;
@@ -55,14 +55,15 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
     Ok(())
 }
 
-/// Settings can only change while the watcher is stopped. Otherwise someone
-/// at the laptop could quietly change them (e.g. swap the command for a
-/// harmless one) for the next start, and the running watcher would be using
-/// different settings from the ones `config show` prints.
-fn refuse_while_running(paths: &Paths) -> Result<()> {
+/// Settings and the login entry can only change while the watcher is
+/// stopped. Otherwise someone at the laptop could quietly change them (e.g.
+/// swap the command for a harmless one) for the next start, and the running
+/// watcher would be using different settings from the ones `config show`
+/// prints. `what` names the thing being changed, for the message.
+fn refuse_while_running(paths: &Paths, what: &str) -> Result<()> {
     if let Some(pid) = daemon::running_pid(paths)? {
         bail!(
-            "the watcher is running (PID {pid}), so settings can't be changed. \
+            "the watcher is running (PID {pid}), so {what} can't be changed. \
              Run `nodonuts stop` first"
         );
     }
@@ -83,9 +84,11 @@ fn apply_autostart(paths: &Paths, enabled: bool) -> Result<()> {
 }
 
 /// `nodonuts refresh`: rebuilds everything NoDonuts generates from the
-/// settings. Today that is only the login entry. Safe to run any time; a
-/// running watcher is not touched.
+/// settings. Today that is only the login entry. Refused while the watcher
+/// runs, like changing settings: otherwise someone at the laptop could point
+/// the login entry at another program for the next login.
 fn refresh(paths: &Paths) -> Result<()> {
+    refuse_while_running(paths, "the login entry")?;
     let config = config::load(&paths.config_file)?;
     apply_autostart(paths, config.autostart)
 }

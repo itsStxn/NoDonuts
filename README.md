@@ -42,7 +42,7 @@ macOS lock example: `pmset displaysleepnow`.
 | `nodonuts start` | Starts the background watcher |
 | `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face) |
 | `nodonuts status` | Shows whether it is running (and its PID), and whether it starts at login |
-| `nodonuts refresh` | Updates the login entry to match `autostart`, pointing at the copy you run it from |
+| `nodonuts refresh` | Updates the login entry to match `autostart`, pointing at the copy you run it from. Only while the watcher is stopped |
 | `nodonuts config show` | Prints all settings |
 | `nodonuts config get <key>` | Prints one setting |
 | `nodonuts config set <key> <value>` | Validates and saves one setting |
@@ -155,7 +155,8 @@ nodonuts config set command 'echo "Gone at $(date +%T)!" >> ~/away.log'
   - `nodonuts status` shows the program the entry runs, and warns if it no
     longer exists. To fix it, run `nodonuts refresh` from the program's new
     location.
-  - Only `config set autostart` and `nodonuts refresh` change the entry.
+  - Only `config set autostart` and `nodonuts refresh` change the entry, and
+    both refuse while the watcher is running.
     `nodonuts start` never does, so starting a test copy from `build/bin/`
     can't redirect autostart to it. `start` only warns when the entry is out
     of date: missing, pointing at a deleted program, or not matching the
