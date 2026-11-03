@@ -29,6 +29,13 @@ pub enum Command {
     /// Update the login entry to point at this copy of nodonuts. Run it from
     /// the copy you want started at login, e.g. after moving the program.
     Refresh,
+    /// Set or change the fallback password, used by `stop` when your face
+    /// isn't recognized.
+    Password {
+        /// Remove the fallback password instead.
+        #[arg(long)]
+        remove: bool,
+    },
     /// Show or change settings.
     Config {
         /// What to do with the settings.

@@ -4,7 +4,7 @@
 use amzn_no_donuts::cli::{Cli, Command, ConfigAction};
 use amzn_no_donuts::config::{self, Config};
 use amzn_no_donuts::files::Paths;
-use amzn_no_donuts::{autostart, daemon, enroll, watcher};
+use amzn_no_donuts::{autostart, daemon, enroll, password, prompt, watcher};
 use anyhow::{Result, bail};
 use clap::Parser;
 
@@ -19,6 +19,7 @@ fn main() -> Result<()> {
         Command::Stop => daemon::stop(&paths),
         Command::Status => daemon::status(&paths),
         Command::Refresh => refresh(&paths),
+        Command::Password { remove } => set_password(&paths, remove),
         Command::Watch => watcher::run(&paths),
         Command::Config { action } => run_config(&paths, action),
     }
@@ -52,6 +53,23 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
             apply_autostart(paths, false)?;
         }
     }
+    Ok(())
+}
+
+/// `nodonuts password`: set, change or remove the fallback password.
+fn set_password(paths: &Paths, remove: bool) -> Result<()> {
+    refuse_while_running(paths, "the fallback password")?;
+    if remove {
+        if password::remove(&paths.password_file)? {
+            println!("Fallback password removed.");
+        } else {
+            println!("No fallback password was set.");
+        }
+        return Ok(());
+    }
+    let typed = prompt::ask_new_password()?;
+    password::save(&paths.password_file, &typed)?;
+    println!("Fallback password saved.");
     Ok(())
 }
 

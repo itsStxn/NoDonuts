@@ -2,15 +2,21 @@
 //!
 //! `start` launches this same program again as `nodonuts watch`, detached
 //! from the terminal, and writes the new process ID (PID) to a file.
-//! `stop` reads that file and asks the process to exit with `SIGTERM`.
+//! `stop` asks the watcher to stop over its control socket (see `control`),
+//! falling back to `SIGTERM` if that socket isn't there.
 
 use crate::autostart;
 use crate::config;
+use crate::control::{Reply, STOP_REQUEST};
 use crate::enroll;
 use crate::files::{self, Paths};
+use crate::password;
+use crate::prompt;
 use anyhow::{Context, Result, bail};
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
+use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -18,10 +24,11 @@ use std::time::{Duration, Instant};
 
 /// How long `start` watches the new process for an early crash.
 const STARTUP_CHECK: Duration = Duration::from_secs(3);
-/// How long `stop` waits for a clean exit before forcing it. With
-/// `face_checkout`, the watcher may first look for the owner (~3 s) and run the
-/// command (up to 5 s).
+/// How long `stop` waits for a clean exit before forcing it, once the
+/// checkout is over. The watcher may still run the command (up to 5 s).
 const STOP_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long `stop` waits for each message from the watcher.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// `nodonuts start`.
 pub fn start(paths: &Paths) -> Result<()> {
@@ -42,6 +49,24 @@ pub fn start(paths: &Paths) -> Result<()> {
             "warning: {problem}. Fix: `nodonuts stop`, then `nodonuts refresh`, \
              then `nodonuts start`."
         );
+    }
+    // A damaged or unsafe password file stops us here, like the face file.
+    let has_password = password::load(&paths.password_file)?.is_some();
+    if config.face_checkout && !has_password {
+        if std::io::stdin().is_terminal() {
+            println!("face_checkout is on, but no fallback password is set.");
+            println!("You'll need it to stop NoDonuts if your face isn't recognized.");
+            let typed = prompt::ask_new_password()?;
+            password::save(&paths.password_file, &typed)?;
+            println!("Fallback password saved. Change it with `nodonuts password`.");
+        } else {
+            // E.g. autostart at login: no terminal to ask in. Start anyway;
+            // being watched without the fallback beats not being watched.
+            eprintln!(
+                "warning: no fallback password set, and no terminal to ask for one. \
+                 Set one with `nodonuts password`."
+            );
+        }
     }
 
     let program = std::env::current_exe().context("could not find the nodonuts program")?;
@@ -80,19 +105,27 @@ pub fn stop(paths: &Paths) -> Result<()> {
         println!("NoDonuts is not running.");
         return Ok(());
     };
-    // Only used for the message: the watcher decides with the settings it
-    // started with. A broken config must not prevent stopping.
-    let face_checkout = config::load(&paths.config_file)
-        .map(|config| config.face_checkout)
-        .unwrap_or(false);
-    if face_checkout {
-        println!("face_checkout is on: look at the camera...");
-    }
-
     // Cleared first, so an old result is never reported for this stop.
     remove_stop_result(paths);
     let target = Pid::from_raw(pid);
-    signal::kill(target, Signal::SIGTERM).context("could not signal the watcher")?;
+
+    // Talk to the watcher over its socket, so it can ask for the fallback
+    // password if needed. If the socket isn't there (an older watcher, or
+    // setting it up failed), fall back to a plain signal.
+    let outcome = match UnixStream::connect(&paths.control_socket) {
+        Ok(connection) => talk_to_watcher(connection),
+        Err(_) => {
+            signal::kill(target, Signal::SIGTERM).context("could not signal the watcher")?;
+            None
+        }
+    };
+    // The checkout failed: the watcher ran the command and keeps running.
+    // Don't wait for it to exit (and certainly don't force it).
+    if outcome.as_deref() == Some("denied") {
+        println!("Owner not recognized: your command ran, and NoDonuts is still watching.");
+        println!("Run `nodonuts stop` again to retry.");
+        bail!("not stopped");
+    }
 
     let deadline = Instant::now() + STOP_TIMEOUT;
     while is_alive(pid) && Instant::now() < deadline {
@@ -105,16 +138,62 @@ pub fn stop(paths: &Paths) -> Result<()> {
     }
     remove_pid_file(paths);
 
-    let result = std::fs::read_to_string(&paths.stop_result_file).unwrap_or_default();
+    // The socket tells us how it went; with a signal, the watcher leaves a
+    // result file instead.
+    let outcome = outcome
+        .or_else(|| std::fs::read_to_string(&paths.stop_result_file).ok())
+        .unwrap_or_default();
     remove_stop_result(paths);
-    match result.trim() {
+    match outcome.trim() {
         "owner" => println!("Owner recognized. NoDonuts stopped (PID {pid})."),
+        "password" => println!("Fallback password accepted. NoDonuts stopped (PID {pid})."),
         "command" => {
             println!("Owner not recognized: your command ran, then NoDonuts stopped (PID {pid}).");
         }
         _ => println!("NoDonuts stopped (PID {pid})."),
     }
     Ok(())
+}
+
+/// Sends `STOP` and follows the watcher's checkout (see the `control`
+/// module): shows progress and asks for the fallback password when the
+/// watcher wants it. Returns how it ended, or `None` if the watcher went
+/// quiet.
+fn talk_to_watcher(connection: UnixStream) -> Option<String> {
+    let mut writer = connection.try_clone().ok()?;
+    // Generous: the watcher may be finishing a command first.
+    let _ = connection.set_read_timeout(Some(REPLY_TIMEOUT));
+    writer
+        .write_all(format!("{STOP_REQUEST}\n").as_bytes())
+        .ok()?;
+
+    for line in BufReader::new(connection).lines() {
+        // A read error (timeout, closed) ends the conversation.
+        let line = line.ok()?;
+        match Reply::parse(&line) {
+            Some(Reply::Looking { attempt: 1, .. }) => println!("Look at the camera..."),
+            Some(Reply::Looking { .. }) => println!("Look at the camera again..."),
+            Some(Reply::NotSeen { attempt, of }) => println!("Not recognized ({attempt}/{of})."),
+            Some(Reply::Password { attempt, of }) => {
+                let label = if of > 1 {
+                    format!("Fallback password ({attempt}/{of}): ")
+                } else {
+                    "Fallback password: ".to_string()
+                };
+                // If we can't ask (no terminal), send an empty answer: it
+                // counts as wrong, which ends in the command running.
+                let typed = prompt::read_hidden(&label).unwrap_or_else(|error| {
+                    eprintln!("{error:#}");
+                    String::new()
+                });
+                writer.write_all(format!("{typed}\n").as_bytes()).ok()?;
+            }
+            Some(Reply::Wrong) => println!("Wrong password."),
+            Some(Reply::Done(outcome)) => return Some(outcome),
+            None => {} // unknown line: ignore
+        }
+    }
+    None
 }
 
 fn remove_stop_result(paths: &Paths) {
@@ -129,6 +208,11 @@ pub fn status(paths: &Paths) -> Result<()> {
         None => println!("NoDonuts is not running."),
     }
     print_autostart_status(paths);
+    match password::load(&paths.password_file) {
+        Ok(Some(_)) => println!("Fallback password: set"),
+        Ok(None) => println!("Fallback password: not set (set one with `nodonuts password`)"),
+        Err(error) => println!("Fallback password: unusable ({error:#})"),
+    }
     Ok(())
 }
 

@@ -32,6 +32,10 @@ pub struct Paths {
     /// Written by the watcher as it exits: how the stop went (see
     /// `watcher::StopOutcome`), so `nodonuts stop` can report it.
     pub stop_result_file: PathBuf,
+    /// The fallback checkout password's hash (never the password).
+    pub password_file: PathBuf,
+    /// The local socket `nodonuts stop` uses to talk to the watcher.
+    pub control_socket: PathBuf,
 }
 
 impl Paths {
@@ -61,6 +65,8 @@ impl Paths {
             log_file: data_dir.join("nodonuts.log"),
             autostart_file,
             stop_result_file: data_dir.join("last_stop"),
+            password_file: data_dir.join("fallback_checkout.toml"),
+            control_socket: data_dir.join("control.sock"),
         })
     }
 }

@@ -1,9 +1,10 @@
 //! Runs the owner's bash command.
 
 use anyhow::{Context, Result};
+use std::cell::Cell;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
@@ -18,27 +19,60 @@ pub enum CommandEnd {
     StillRunning,
 }
 
-/// Runs `command` and waits for it to finish, unless `stop` is set first.
-///
-/// The watcher calls this with the camera released, so the command can use
-/// the camera itself (Linux lets only one program use it at a time). It
-/// checks `stop` every 100 ms, so `nodonuts stop` still works while a long
-/// command runs.
-pub fn run_until_done(command: &str, stop: &AtomicBool) -> CommandEnd {
-    let finished = start(command);
-    loop {
-        match finished.recv_timeout(Duration::from_millis(100)) {
-            // `Disconnected` means the thread ended without sending, which
-            // only happens if it panicked: there is nothing left to wait for.
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => return CommandEnd::Finished,
-            Err(RecvTimeoutError::Timeout) => {
-                if stop.load(Ordering::Relaxed) {
-                    log::info!("stop requested while the command is running; not waiting for it");
-                    return CommandEnd::StillRunning;
+/// A command started with [`start`].
+#[derive(Debug)]
+pub struct RunningCommand {
+    /// Receives one message when the command is done.
+    finished: Receiver<()>,
+    /// Set once that message was seen. `Cell` lets `&self` methods update
+    /// it (the struct is only used from one thread).
+    done: Cell<bool>,
+}
+
+impl RunningCommand {
+    /// Waits for the command to finish, unless `interrupted()` turns true
+    /// first (checked every 100 ms), so `nodonuts stop` still works while a
+    /// long command runs.
+    ///
+    /// `&dyn Fn() -> bool` means "some function that answers yes or no".
+    pub fn wait_unless(&self, interrupted: &dyn Fn() -> bool) -> CommandEnd {
+        loop {
+            if self.done.get() {
+                return CommandEnd::Finished;
+            }
+            match self.finished.recv_timeout(Duration::from_millis(100)) {
+                // `Disconnected` means the thread is gone (it already sent
+                // its message, or it panicked): nothing left to wait for.
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                    self.done.set(true);
+                    return CommandEnd::Finished;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if interrupted() {
+                        log::info!("interrupted while the command is running; not waiting for it");
+                        return CommandEnd::StillRunning;
+                    }
                 }
             }
         }
     }
+
+    /// True once the command has finished. Never waits.
+    pub fn is_done(&self) -> bool {
+        if self.done.get() {
+            return true;
+        }
+        let done = !matches!(self.finished.try_recv(), Err(TryRecvError::Empty));
+        // Remember it: the message can only be received once.
+        self.done.set(done);
+        done
+    }
+}
+
+/// Runs `command` and waits for it to finish, unless `stop` is set first.
+/// A shorthand for [`start`] followed by [`RunningCommand::wait_unless`].
+pub fn run_until_done(command: &str, stop: &AtomicBool) -> CommandEnd {
+    start(command).wait_unless(&|| stop.load(Ordering::Relaxed))
 }
 
 /// Runs `command` and waits up to `timeout` for it to finish.
@@ -47,7 +81,7 @@ pub fn run_until_done(command: &str, stop: &AtomicBool) -> CommandEnd {
 /// the command off. The wait is capped so a slow command cannot hold up a
 /// logout or shutdown.
 pub fn run_and_wait(command: &str, timeout: Duration) -> CommandEnd {
-    match start(command).recv_timeout(timeout) {
+    match start(command).finished.recv_timeout(timeout) {
         Ok(()) | Err(RecvTimeoutError::Disconnected) => CommandEnd::Finished,
         Err(RecvTimeoutError::Timeout) => {
             log::warn!(
@@ -59,9 +93,8 @@ pub fn run_and_wait(command: &str, timeout: Duration) -> CommandEnd {
     }
 }
 
-/// Starts `command` on its own thread, which logs its result. Returns a
-/// channel that receives one message when the command is done.
-fn start(command: &str) -> Receiver<()> {
+/// Starts `command` on its own thread, which logs its result.
+pub fn start(command: &str) -> RunningCommand {
     let command = command.to_string();
     let (done, finished) = mpsc::channel();
     // `move` hands ownership of `command` and `done` to the thread.
@@ -72,7 +105,10 @@ fn start(command: &str) -> Receiver<()> {
         // Ignore send errors: they only mean nobody is waiting any more.
         let _ = done.send(());
     });
-    finished
+    RunningCommand {
+        finished,
+        done: Cell::new(false),
+    }
 }
 
 fn run_and_log(command: &str) -> Result<()> {
@@ -146,6 +182,15 @@ mod tests {
             CommandEnd::Finished
         );
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn is_done_reports_without_waiting() {
+        let running = start("sleep 0.3");
+        assert!(!running.is_done());
+        thread::sleep(Duration::from_millis(800));
+        assert!(running.is_done());
+        assert!(running.is_done(), "stays done");
     }
 
     #[test]

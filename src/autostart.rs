@@ -329,6 +329,8 @@ mod tests {
             log_file: dir.join("log"),
             autostart_file: dir.join("autostart").join("nodonuts.desktop"),
             stop_result_file: dir.join("last_stop"),
+            password_file: dir.join("fallback_checkout.toml"),
+            control_socket: dir.join("control.sock"),
         };
         (dir, paths)
     }

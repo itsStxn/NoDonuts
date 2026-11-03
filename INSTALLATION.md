@@ -73,17 +73,18 @@ The last line prints `nodonuts 0.1.0`.
 ```bash
 nodonuts enroll
 nodonuts config set command 'loginctl lock-session'    # Linux: lock the screen
+nodonuts config set autostart true                     # optional: start at every login
 nodonuts start
 nodonuts status
 ```
 
 On macOS, use `pmset displaysleepnow` as the command instead.
 
-To start NoDonuts at every login:
+Settings can only be changed while NoDonuts is stopped, so set them before
+`nodonuts start`.
 
-```bash
-nodonuts config set autostart true
-```
+The first `nodonuts start` asks you to choose a fallback password. You'll
+type it in `nodonuts stop` if your face isn't recognized.
 
 See [README.md](README.md) for every command and setting.
 
@@ -116,8 +117,10 @@ nodonuts start
 Your enrolled face and settings are kept.
 
 - Stay in front of the camera when running these: `nodonuts stop` checks for
-  your face first (`face_checkout`, on by default), and runs your command if
-  it doesn't see you. The same goes for uninstalling.
+  your face first (`face_checkout`, on by default). If it doesn't see you, it
+  asks for your fallback password. If that fails too, your command runs and
+  the watcher keeps running; run `nodonuts stop` again. The same goes for
+  uninstalling.
 
 - Re-enroll (`nodonuts enroll`) only if an update replaces the face model
   (`models/sface.onnx`).
@@ -134,7 +137,7 @@ nodonuts config set autostart false
 rm ~/.local/bin/nodonuts
 ```
 
-To also delete your settings, enrolled face and log:
+To also delete your settings, enrolled face, fallback password and log:
 
 ```bash
 rm -rf ~/.config/nodonuts ~/.local/share/nodonuts         # Linux
@@ -168,5 +171,6 @@ rm -rf ~/Library/Application\ Support/nodonuts            # macOS
 | Program | `~/.local/bin/nodonuts` | `~/.local/bin/nodonuts` |
 | Settings | `~/.config/nodonuts/config.toml` | `~/Library/Application Support/nodonuts/config.toml` |
 | Enrolled face | `~/.local/share/nodonuts/owner_face.toml` | `~/Library/Application Support/nodonuts/owner_face.toml` |
+| Fallback password (hash only) | `~/.local/share/nodonuts/fallback_checkout.toml` | `~/Library/Application Support/nodonuts/fallback_checkout.toml` |
 | Log | `~/.local/share/nodonuts/nodonuts.log` | `~/Library/Application Support/nodonuts/nodonuts.log` |
 | Login entry (`autostart`) | `~/.config/autostart/nodonuts.desktop` | `~/Library/LaunchAgents/com.amazon.nodonuts.plist` |

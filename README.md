@@ -27,9 +27,9 @@ macOS.
 nodonuts enroll                      # look at the camera for a few seconds
 nodonuts config set command 'loginctl lock-session'   # Linux example
 nodonuts config set grace_seconds 30
-nodonuts start                       # watches in the background
+nodonuts start                       # watches in the background; asks for a fallback password the first time
 nodonuts status
-nodonuts stop
+nodonuts stop                        # look at the camera (or type the fallback password)
 ```
 
 macOS lock example: `pmset displaysleepnow`.
@@ -40,8 +40,9 @@ macOS lock example: `pmset displaysleepnow`.
 |---|---|
 | `nodonuts enroll` | Captures 10 frames of your face and saves the average embedding |
 | `nodonuts start` | Starts the background watcher |
-| `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face) |
-| `nodonuts status` | Shows whether it is running (and its PID), and whether it starts at login |
+| `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face, or the fallback password) |
+| `nodonuts status` | Shows whether it is running (and its PID), whether it starts at login, and whether a fallback password is set |
+| `nodonuts password` | Sets or changes the fallback password (`--remove` to delete it). Only while the watcher is stopped |
 | `nodonuts refresh` | Updates the login entry to match `autostart`, pointing at the copy you run it from. Only while the watcher is stopped |
 | `nodonuts config show` | Prints all settings |
 | `nodonuts config get <key>` | Prints one setting |
@@ -66,6 +67,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `check_every_ms` | `500` | How often the camera is checked |
 | `command` | `echo 'The owner is gone!'` | Bash command to run (see [How the command runs](#how-the-command-runs)) |
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
+| `face_checks` | `3` | How many face checkout attempts (about 3 s each) `nodonuts stop` makes before asking for the fallback password. 1 to 10 |
 | `grace_seconds` | `30` | How long you may be away before the command runs |
 | `match_threshold` | `0.36` | Minimum similarity (0 to 1) a face needs to count as yours. **Higher is stricter:** closer to 1, strangers are rejected more reliably but your own face is missed more often (bad angle or light). Closer to 0, almost any face passes as you. Faces below it count as strangers in aggressive mode |
 
@@ -199,17 +201,50 @@ nodonuts config set command '/home/me/scripts/away.sh'
 
 Without it, anyone at your unlocked laptop could type `nodonuts stop` (or
 `pkill nodonuts`) during the grace period, and nothing would happen. So it's
-on by default: only your face can stop the watcher quietly. To turn it off,
-run `nodonuts stop` (this stop still needs your face), then
-`nodonuts config set face_checkout false` and `nodonuts start`.
+on by default: only your face, or your fallback password, can stop the
+watcher quietly. To turn it off, run `nodonuts stop` (this stop still needs
+your face or password), then `nodonuts config set face_checkout false` and
+`nodonuts start`.
 
-- When the watcher is asked to stop, it looks at the camera for about 3
-  seconds.
-  - **You're seen:** it stops quietly.
-  - **You're not seen:** it runs your command (e.g. locks the screen), then
-    stops.
-- `nodonuts stop` prints "look at the camera...", then which of the two
-  happened.
+**With `nodonuts stop` in your terminal:**
+
+1. The watcher looks at the camera for about 3 seconds. **You're seen:** it
+   stops quietly.
+2. Not seen: it tries again, up to `face_checks` times (default 3, about 9 s
+   in total). `nodonuts stop` shows "Not recognized (1/3)… Look at the camera
+   again…".
+3. Still not seen: it asks for your **fallback password** once (hidden as
+   you type, within 30 seconds). **Right password:** it stops quietly.
+4. Otherwise (wrong password, no answer, Ctrl+C, or no password set): your
+   command runs (e.g. locks the screen), and **the watcher keeps watching**.
+   `nodonuts stop` says so and exits with an error. Run it again to retry:
+   each `nodonuts stop` starts over, with full face checks and one new
+   password try, and each failed one runs your command again.
+
+**With anything else** (`kill <pid>`, `pkill nodonuts`, logout, shutdown):
+there's nobody to type a password, so the watcher looks once (about 3 s).
+Seen: it stops quietly. Not seen: your command runs, then it stops.
+
+The fallback password covers the times the camera can't confirm you: bad
+light, an odd angle, or (on Linux) a video call holding the camera.
+
+- **Setting it:** the first `nodonuts start` with `face_checkout` on asks for
+  one, twice to catch typos. It can be anything. Change it any time the
+  watcher is stopped with `nodonuts password`, or remove it with
+  `nodonuts password --remove`. `nodonuts status` says whether one is set.
+- **Autostart can't ask for it** (there's no terminal at login), so if none
+  is set, the watcher starts without the fallback and logs a warning.
+- **Only a hash is stored,** never the password. It's an Argon2 hash in
+  `fallback_checkout.toml`, next to your face file, readable only by you.
+  Argon2 is deliberately slow, so guessing from a copy of the file is slow
+  too.
+- **The watcher checks the password, not `nodonuts stop`.** It loads the hash
+  when it starts and keeps it in memory, so changing the file while it runs
+  does nothing.
+- **Forgot it?** Stop the watcher with your face, or with `kill <pid>`
+  (your command runs once, then it stops; `nodonuts status` shows the PID).
+  Then set a new password with `nodonuts password`.
+
 - **The watcher does the check, not `nodonuts stop`.** So `kill <pid>`, `pkill
   nodonuts` and `pkill -<almost any signal> nodonuts` all go through it. That
   includes signals that would normally pause it (`pkill -TSTP`). `SIGHUP`
@@ -220,9 +255,9 @@ run `nodonuts stop` (this stop still needs your face), then
   to stop, so if you're not in front of the camera then, your command runs.
   Logout waits for it: the face checkout, plus up to 5 s for your command.
 - **A camera that can't see you counts as "not seen".** A covered camera, a
-  dark room, or (on Linux) a camera busy in a video call means stopping runs
-  your command. That's harmless with a lock command, but think twice with
-  something like `reboot`.
+  dark room, or (on Linux) a camera busy in a video call means stopping needs
+  the fallback password, or runs your command. That's harmless with a lock
+  command, but think twice with something like `reboot`.
 - Changing settings needs your face too, since it means stopping the watcher
   first.
 
@@ -271,6 +306,9 @@ Code layout (`src/`):
 | `enroll.rs` | Enrollment and the saved face embedding |
 | `files.rs` | File locations and private-permission checks |
 | `autostart.rs` | The login entry behind the `autostart` setting |
+| `control.rs` | The conversation between `nodonuts stop` and the watcher, over a local socket |
+| `password.rs` | The fallback password: Argon2 hash, save, load, verify |
+| `prompt.rs` | The hidden password prompt |
 
 Models (`models/`) are embedded in the binary, both from
 [OpenCV Zoo](https://github.com/opencv/opencv_zoo) (Apache-2.0):

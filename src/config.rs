@@ -6,13 +6,14 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
-pub const KEYS: [&str; 8] = [
+pub const KEYS: [&str; 9] = [
     "aggressive_checks",
     "aggressive_mode",
     "autostart",
     "check_every_ms",
     "command",
     "face_checkout",
+    "face_checks",
     "grace_seconds",
     "match_threshold",
 ];
@@ -45,6 +46,10 @@ pub struct Config {
     /// needs the owner's face. If the owner isn't seen, the command runs
     /// before the watcher exits.
     pub face_checkout: bool,
+    /// How many face checkout attempts in a row (about 3 s each) must fail
+    /// during `nodonuts stop` before it asks for the fallback password.
+    /// 1 to 10.
+    pub face_checks: u64,
     /// How long the owner may be away before the command runs.
     pub grace_seconds: u64,
     /// Minimum cosine similarity (0 to 1) for a face to count as the owner.
@@ -63,6 +68,8 @@ impl Default for Config {
             // On by default: without it, anyone at the laptop can simply
             // run `nodonuts stop` during the grace period.
             face_checkout: true,
+            // 3 attempts, about 9 s: room for a bad angle or bad light.
+            face_checks: 3,
             grace_seconds: 30,
             // SFace's recommended threshold for cosine similarity.
             match_threshold: 0.36,
@@ -89,6 +96,10 @@ impl Config {
         if self.aggressive_checks == 0 {
             bail!("aggressive_checks must be a whole number of 1 or more");
         }
+        // Capped so `nodonuts stop` can't take minutes (each check is ~3 s).
+        if !(1..=10).contains(&self.face_checks) {
+            bail!("face_checks must be a whole number from 1 to 10");
+        }
         Ok(())
     }
 
@@ -103,6 +114,7 @@ impl Config {
             "aggressive_checks" => self.aggressive_checks.to_string(),
             "autostart" => self.autostart.to_string(),
             "face_checkout" => self.face_checkout.to_string(),
+            "face_checks" => self.face_checks.to_string(),
             _ => bail!(unknown_key(key)),
         };
         Ok(value)
@@ -132,6 +144,12 @@ impl Config {
             }
             "autostart" => updated.autostart = parse_on_off(key, value)?,
             "face_checkout" => updated.face_checkout = parse_on_off(key, value)?,
+            "face_checks" => {
+                updated.face_checks = value
+                    .trim()
+                    .parse()
+                    .with_context(|| format!("{key} must be a whole number from 1 to 10"))?
+            }
             _ => bail!(unknown_key(key)),
         }
         updated.validate()?;
@@ -218,6 +236,9 @@ mod tests {
         assert_eq!(config.get("aggressive_checks").unwrap(), "1");
         config.set("aggressive_checks", "10").unwrap();
         assert_eq!(config.get("aggressive_checks").unwrap(), "10");
+        config.set("face_checks", "1").unwrap();
+        config.set("face_checks", "10").unwrap();
+        assert_eq!(config.get("face_checks").unwrap(), "10");
         config.set("face_checkout", "false").unwrap();
         assert_eq!(config.get("face_checkout").unwrap(), "false");
         config.set("autostart", "true").unwrap();
@@ -246,6 +267,9 @@ mod tests {
             ("aggressive_mode", ""),
             ("autostart", "on"),
             ("face_checkout", "yes"),
+            ("face_checks", "0"),
+            ("face_checks", "11"),
+            ("face_checks", "2.5"),
             ("aggressive_checks", "0"),
             ("aggressive_checks", "-1"),
             ("aggressive_checks", "1.5"),
