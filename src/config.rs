@@ -102,8 +102,8 @@ impl Default for Config {
             // On by default: without it, anyone at the laptop can simply
             // run `nodonuts stop` during the grace period.
             face_checkout: true,
-            // 3 frames, about 3 s at the default check_every_ms.
-            face_checks: 3,
+            // 2 frames, about 2 s at the default check_every_ms.
+            face_checks: 2,
             grace_seconds: 30,
             logs_maxdays: 7,
             // Enough for a short password typed from memory.

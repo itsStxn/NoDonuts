@@ -72,7 +72,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `command` | `echo 'The owner is gone!'` | Bash command to run (see [How the command runs](#how-the-command-runs)) |
 | `command_once` | `true` | `true` = after the command runs, NoDonuts stops and turns autostart off. **Pair it with a command that locks you out** (see [Run once](#run-once-command_once)) |
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
-| `face_checks` | `3` | `nodonuts stop` asks for the fallback password if you're not recognized within this many camera frames (1 to 10). Like `aggressive_checks`, it's counted in checks of `check_every_ms`: the default is 3 x 1000 ms, about 3 s |
+| `face_checks` | `2` | `nodonuts stop` asks for the fallback password if you're not recognized within this many camera frames (1 to 10). Like `aggressive_checks`, it's counted in checks of `check_every_ms`: the default is 2 x 1000 ms, about 2 s |
 | `grace_seconds` | `30` | How long you may be away before the command runs |
 | `logs_maxdays` | `7` | Empty the watcher's log once it's this many days old. `0` keeps it forever. The running watcher does this, checking at start and about once a minute |
 | `pwd_ms` | `3000` | How long `nodonuts stop` gives you to type the fallback password, in ms (1 to 60000). Too slow counts as a wrong password. **Keep it small, and your password short enough to type in that time** (see [The password time limit](#the-password-time-limit-pwd_ms)) |
@@ -269,11 +269,11 @@ your face or password), then `nodonuts config set face_checkout false` and
 
 **With `nodonuts stop` in your terminal:**
 
-1. The watcher looks at up to `face_checks` camera frames (default 3), one
+1. The watcher looks at up to `face_checks` camera frames (default 2), one
    every `check_every_ms`, like `aggressive_checks`. So the wait is up to
-   `face_checks x check_every_ms`: about 3 s at the defaults.
+   `face_checks x check_every_ms`: about 2 s at the defaults.
    `nodonuts stop` shows "Look at the camera...", then
-   "Not recognized (1/3)." for each frame that doesn't show you.
+   "Not recognized (1/2)." for each frame that doesn't show you.
 2. **You're seen in any of those frames:** it stops quietly.
 3. Not seen within `face_checks` frames: it asks for your **fallback password** once (hidden as
    you type, within `pwd_ms`: 3 s by default). **Right password:** it stops

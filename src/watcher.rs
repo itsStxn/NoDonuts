@@ -1306,7 +1306,7 @@ mod tests {
     fn the_real_rules_ask_for_the_password_once() {
         let rules = StopRules::from_config(&Config::default());
         assert_eq!(rules.password_tries, 1);
-        assert_eq!(rules.face_checks, 3);
+        assert_eq!(rules.face_checks, 2);
 
         // One wrong password is enough to refuse the stop.
         let hash = password::hash("right").unwrap();
