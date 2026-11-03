@@ -424,7 +424,7 @@ mod tests {
         let owner = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
         let turned = face(vec![0.1, 0.95, 0.0]);
         assert!(best_similarity(&turned.embedding, &owner) > 0.9);
-        assert!(is_owner(&[turned.clone()], &owner, 0.36));
+        assert!(is_owner(std::slice::from_ref(&turned), &owner, 0.36));
         assert!(!has_stranger(&[turned], &owner, 0.2));
         // Unlike every pose: a stranger.
         let other = face(vec![0.0, 0.0, 1.0]);

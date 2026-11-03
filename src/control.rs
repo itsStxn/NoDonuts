@@ -8,8 +8,8 @@
 //!
 //! ```text
 //! stop    -> watcher : STOP
-//! watcher -> stop    : LOOKING 1 3      (look at the camera, attempt 1 of 3)
-//! watcher -> stop    : NOT_SEEN 1 3     (attempt 1 failed)
+//! watcher -> stop    : LOOKING 1 3      (looking at frame 1 of 3)
+//! watcher -> stop    : NOT_SEEN 1 3     (frame 1 didn't show the owner)
 //! ...
 //! watcher -> stop    : PASSWORD 1 3     (type the password, try 1 of 3)
 //! stop    -> watcher : <the password>
@@ -26,14 +26,14 @@ pub const STOP_REQUEST: &str = "STOP";
 /// A line from the watcher to `stop`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
-    /// Looking at the camera: face checkout attempt `attempt` of `of`.
+    /// Looking at the camera: face checkout frame `attempt` of `of`.
     Looking {
         /// This attempt, from 1.
         attempt: u32,
         /// How many attempts there are.
         of: u32,
     },
-    /// That face checkout attempt didn't see the owner.
+    /// That frame didn't show the owner.
     NotSeen {
         /// This attempt, from 1.
         attempt: u32,

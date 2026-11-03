@@ -68,10 +68,11 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `aggressive_mode` | `false` | `true` = run the command without waiting for the grace period when another face is seen and yours is not |
 | `autostart` | `false` | `true` = start the watcher automatically when you log in |
 | `camera` | `built-in` | Which camera to use: `built-in` (the laptop's own) or a camera's name. Choose it with `nodonuts camera`, not `config set` |
-| `check_every_ms` | `1000` | How often the camera is checked. Each check costs about 100 ms of CPU, so this sets how busy NoDonuts is: about 10% of one core at 1000, 20% at 500, 6% at 2000. Checking less often also makes aggressive mode slower (see `aggressive_checks`) |
+| `check_every_ms` | `1000` | How often the camera is checked. Each check costs about 100 ms of CPU, so this sets how busy NoDonuts is: about 10% of one core at 1000, 20% at 500, 6% at 2000. Checking less often also makes aggressive mode and the face checkout slower (see `aggressive_checks` and `face_checks`) |
 | `command` | `echo 'The owner is gone!'` | Bash command to run (see [How the command runs](#how-the-command-runs)) |
+| `command_once` | `true` | `true` = after the command runs, NoDonuts stops and turns autostart off. **Pair it with a command that locks you out** (see [Run once](#run-once-command_once)) |
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
-| `face_checks` | `3` | How many face checkout attempts `nodonuts stop` makes before asking for the fallback password. 1 to 10. Each attempt lasts about 3000 ms, whatever this value is, so the default of 3 means up to about 9000 ms in total |
+| `face_checks` | `3` | `nodonuts stop` asks for the fallback password if you're not recognized within this many camera frames (1 to 10). Like `aggressive_checks`, it's counted in checks of `check_every_ms`: the default is 3 x 1000 ms, about 3 s |
 | `grace_seconds` | `30` | How long you may be away before the command runs |
 | `logs_maxdays` | `7` | Empty the watcher's log once it's this many days old. `0` keeps it forever. The running watcher does this, checking at start and about once a minute |
 | `threshold_owner` | `0.36` | Minimum similarity (0 to 1) a face needs to count as yours. **Higher is stricter:** closer to 1, strangers are rejected more reliably but your own face is missed more often (bad angle or light). Closer to 0, almost any face passes as you. Called `match_threshold` before; old config files still load |
@@ -148,9 +149,44 @@ to worry about, and you can test it on its own:
 nodonuts config set command '/home/me/scripts/away.sh'
 ```
 
+### Run once (`command_once`)
+
+> **It is VERY recommended to pair `command_once` (on by default) with a
+> command that locks you out**, such as `loginctl lock-session` (Linux),
+> `pmset displaysleepnow` (macOS), suspending, logging out or rebooting.
+> With a command that doesn't lock, like the default `echo`, NoDonuts stops
+> protecting you after your first absence.
+
+With `command_once = true`, once your command has run, NoDonuts:
+
+1. **turns autostart off** (the setting and the login entry), *before* the
+   command runs, so a `reboot` can't skip it;
+2. runs the command;
+3. **stops.**
+
+This applies every time the command runs: the grace period, aggressive
+mode, a refused `nodonuts stop`, or a stop signal while you're away.
+
+Why: with a powerful command and autostart, a watcher that stops
+recognizing you (new haircut, beard shaved off, a new camera) could reboot
+or log you out at every login. With `command_once`, it does it once and
+gets out of the way. `nodonuts status` then says it stopped after running
+the command. To protect yourself again: `nodonuts start` (and re-enroll if
+it no longer recognizes you), plus `nodonuts config set autostart true` if
+you use autostart.
+
+The flip side: anyone who sets it off (sitting down at your laptop) is
+locked out, but autostart is off afterwards too, until you turn it back on.
+
+With `command_once = false`, the watcher keeps going after the command, and
+fires again after your next absence.
+
 ## How it behaves
 
-- The command runs once per absence. It re-arms when you're seen again.
+- The command runs once per absence. With `command_once` (the default),
+  NoDonuts then stops and turns autostart off (see
+  [Run once](#run-once-command_once)). With `command_once = false`, it keeps
+  watching and re-arms when you're seen again.
 - A covered camera, a dark room, a camera error, or a camera in use by
   another app all count as "not seen", so the command fires. This is
   deliberate: it fails toward locking.
@@ -232,22 +268,28 @@ your face or password), then `nodonuts config set face_checkout false` and
 
 **With `nodonuts stop` in your terminal:**
 
-1. The watcher looks at the camera for about 3 seconds. **You're seen:** it
-   stops quietly.
-2. Not seen: it tries again, up to `face_checks` times (default 3, about 9 s
-   in total). `nodonuts stop` shows "Not recognized (1/3)… Look at the camera
-   again…".
-3. Still not seen: it asks for your **fallback password** once (hidden as
+1. The watcher looks at up to `face_checks` camera frames (default 3), one
+   every `check_every_ms`, like `aggressive_checks`. So the wait is up to
+   `face_checks x check_every_ms`: about 3 s at the defaults.
+   `nodonuts stop` shows "Look at the camera...", then
+   "Not recognized (1/3)." for each frame that doesn't show you.
+2. **You're seen in any of those frames:** it stops quietly.
+3. Not seen within `face_checks` frames: it asks for your **fallback password** once (hidden as
    you type, within 30 seconds). **Right password:** it stops quietly.
 4. Otherwise (wrong password, no answer, Ctrl+C, or no password set): your
-   command runs (e.g. locks the screen), and **the watcher keeps watching**.
-   `nodonuts stop` says so and exits with an error. Run it again to retry:
-   each `nodonuts stop` starts over, with full face checks and one new
-   password try, and each failed one runs your command again.
+   command runs (e.g. locks the screen). Then:
+   - with `command_once` (the default): the watcher stops and turns
+     autostart off, and `nodonuts stop` says so;
+   - with `command_once = false`: **the watcher keeps watching**.
+     `nodonuts stop` says so and exits with an error. Run it again to retry:
+     each `nodonuts stop` starts over, with full face checks and one new
+     password try, and each failed one runs your command again.
 
 **With anything else** (`kill <pid>`, `pkill nodonuts`, logout, shutdown):
-there's nobody to type a password, so the watcher looks once (about 3 s).
-Seen: it stops quietly. Not seen: your command runs, then it stops.
+there's nobody to type a password, so the watcher looks once (about 3 s,
+whatever `face_checks` and `check_every_ms` are, so a logout isn't held up).
+Seen: it stops quietly. Not seen: your command runs, then it stops (and
+with `command_once`, autostart is turned off too).
 
 The fallback password covers the times the camera can't confirm you: bad
 light, an odd angle, or (on Linux) a video call holding the camera.

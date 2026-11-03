@@ -21,7 +21,7 @@
 //!     every ~60 s: empty the log if older than logs_maxdays
 //!
 //! stop (`nodonuts stop`, over control.sock):
-//!   face checkout, up to face_checks attempts
+//!   face checkout: up to face_checks frames, one per check_every_ms
 //!   -> still not seen: ask the fallback password once
 //!   -> ok: watcher exits quietly
 //!   -> not ok: command runs, watcher keeps watching

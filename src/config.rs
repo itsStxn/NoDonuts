@@ -6,13 +6,14 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
-pub const KEYS: [&str; 12] = [
+pub const KEYS: [&str; 13] = [
     "aggressive_checks",
     "aggressive_mode",
     "autostart",
     "camera",
     "check_every_ms",
     "command",
+    "command_once",
     "face_checkout",
     "face_checks",
     "grace_seconds",
@@ -48,13 +49,19 @@ pub struct Config {
     pub check_every_ms: u64,
     /// The bash command to run.
     pub command: String,
+    /// If true, once the command has run the watcher stops and turns
+    /// autostart off, so a command that reboots or logs out can't loop
+    /// (e.g. after a haircut, at every login). Best with a command that
+    /// locks the owner out.
+    pub command_once: bool,
     /// If true, stopping the watcher (`nodonuts stop`, `kill`, `pkill`)
     /// needs the owner's face. If the owner isn't seen, the command runs
     /// before the watcher exits.
     pub face_checkout: bool,
-    /// How many face checkout attempts in a row (about 3 s each) must fail
-    /// during `nodonuts stop` before it asks for the fallback password.
-    /// 1 to 10.
+    /// `nodonuts stop` asks for the fallback password if the owner isn't
+    /// recognized within this many camera frames. One frame every
+    /// `check_every_ms`, like `aggressive_checks`, so the wait is up to
+    /// `face_checks x check_every_ms`. 1 to 10.
     pub face_checks: u64,
     /// How long the owner may be away before the command runs.
     pub grace_seconds: u64,
@@ -85,10 +92,11 @@ impl Default for Config {
             // nothing a 30 s grace period would notice.
             check_every_ms: 1000,
             command: "echo 'The owner is gone!'".to_string(),
+            command_once: true,
             // On by default: without it, anyone at the laptop can simply
             // run `nodonuts stop` during the grace period.
             face_checkout: true,
-            // 3 attempts, about 9 s: room for a bad angle or bad light.
+            // 3 frames, about 3 s at the default check_every_ms.
             face_checks: 3,
             grace_seconds: 30,
             logs_maxdays: 7,
@@ -134,7 +142,7 @@ impl Config {
         if self.aggressive_checks == 0 {
             bail!("aggressive_checks must be a whole number of 1 or more");
         }
-        // Capped so `nodonuts stop` can't take minutes (each check is ~3 s).
+        // Capped so `nodonuts stop` stays quick (one frame per check_every_ms).
         if !(1..=10).contains(&self.face_checks) {
             bail!("face_checks must be a whole number from 1 to 10");
         }
@@ -149,6 +157,7 @@ impl Config {
         let value = match key {
             "grace_seconds" => self.grace_seconds.to_string(),
             "command" => self.command.clone(),
+            "command_once" => self.command_once.to_string(),
             "threshold_owner" => self.threshold_owner.to_string(),
             "threshold_stranger" => self.threshold_stranger.to_string(),
             "check_every_ms" => self.check_every_ms.to_string(),
@@ -172,6 +181,7 @@ impl Config {
         match key {
             "grace_seconds" => updated.grace_seconds = parse_whole_number(key, value)?,
             "command" => updated.command = value.to_string(),
+            "command_once" => updated.command_once = parse_on_off(key, value)?,
             "threshold_owner" => updated.threshold_owner = parse_fraction(key, value)?,
             "threshold_stranger" => updated.threshold_stranger = parse_fraction(key, value)?,
             "check_every_ms" => updated.check_every_ms = parse_whole_number(key, value)?,
@@ -298,6 +308,8 @@ mod tests {
         config.set("face_checks", "1").unwrap();
         config.set("face_checks", "10").unwrap();
         assert_eq!(config.get("face_checks").unwrap(), "10");
+        config.set("command_once", "false").unwrap();
+        assert_eq!(config.get("command_once").unwrap(), "false");
         config.set("face_checkout", "false").unwrap();
         assert_eq!(config.get("face_checkout").unwrap(), "false");
         config.set("autostart", "true").unwrap();
@@ -376,6 +388,7 @@ mod tests {
             ("aggressive_mode", ""),
             ("autostart", "on"),
             ("face_checkout", "yes"),
+            ("command_once", "1"),
             ("face_checks", "0"),
             ("face_checks", "11"),
             ("face_checks", "2.5"),
@@ -410,6 +423,7 @@ mod tests {
         assert!(!config.autostart);
         // ...but face_checkout is on, including for older configs.
         assert!(config.face_checkout);
+        assert!(config.command_once);
         assert_eq!(config.aggressive_checks, 2);
     }
 

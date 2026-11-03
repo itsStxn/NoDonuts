@@ -169,6 +169,12 @@ pub fn stop(paths: &Paths) -> Result<()> {
     match outcome.trim() {
         "owner" => println!("Owner recognized. NoDonuts stopped (PID {pid})."),
         "password" => println!("Fallback password accepted. NoDonuts stopped (PID {pid})."),
+        "once" => {
+            println!(
+                "Owner not recognized: your command ran, then NoDonuts stopped (PID {pid}) \
+                 and turned autostart off (command_once)."
+            );
+        }
         "command" => {
             println!("Owner not recognized: your command ran, then NoDonuts stopped (PID {pid}).");
         }
@@ -193,8 +199,9 @@ fn talk_to_watcher(connection: UnixStream) -> Option<String> {
         // A read error (timeout, closed) ends the conversation.
         let line = line.ok()?;
         match Reply::parse(&line) {
+            // One line per frame would scroll fast; say it once.
             Some(Reply::Looking { attempt: 1, .. }) => println!("Look at the camera..."),
-            Some(Reply::Looking { .. }) => println!("Look at the camera again..."),
+            Some(Reply::Looking { .. }) => {}
             Some(Reply::NotSeen { attempt, of }) => println!("Not recognized ({attempt}/{of})."),
             Some(Reply::Password { attempt, of }) => {
                 let label = if of > 1 {
@@ -235,7 +242,20 @@ fn remove_stop_result(paths: &Paths) {
 pub fn status(paths: &Paths) -> Result<()> {
     match running_pid(paths)? {
         Some(pid) => println!("NoDonuts is watching (PID {pid})."),
-        None => println!("NoDonuts is not running."),
+        None => {
+            println!("NoDonuts is not running.");
+            let last = std::fs::read_to_string(&paths.stop_result_file).unwrap_or_default();
+            if last.trim() == "once" {
+                println!(
+                    "  It stopped after running your command (command_once), and turned \
+                     autostart off."
+                );
+                println!(
+                    "  Start again with `nodonuts start`, and `nodonuts config set autostart true` \
+                     if you use autostart."
+                );
+            }
+        }
     }
     print_autostart_status(paths);
     match password::load(&paths.password_file) {

@@ -2,6 +2,7 @@
 //!
 //! This is what `nodonuts watch` runs in the background.
 
+use crate::autostart;
 use crate::camera::{FrameSource, Webcam};
 use crate::config::{self, Config};
 use crate::control::{Reply, STOP_REQUEST};
@@ -169,8 +170,10 @@ impl Watcher {
     /// Handles one connection on the control socket (see the `control`
     /// module): a `nodonuts stop` asking to stop.
     ///
-    /// Runs up to `face_checks` face checkouts, then, if a fallback
-    /// password is set, gives up to `password_tries` tries to type it.
+    /// Looks at up to `face_checks` camera frames, `frame_pause` apart
+    /// (like the watch loop's checks), and stops looking as soon as one
+    /// shows the owner. If none does and a fallback password is set, gives
+    /// up to `password_tries` tries to type it.
     /// Returns `None` if the connection wasn't a proper stop request; the
     /// watcher then simply carries on.
     pub fn handle_stop_request(
@@ -205,19 +208,28 @@ impl Watcher {
             return Some(StopOutcome::Unchecked);
         }
 
+        // One frame per check, like `aggressive_checks`: `face_checks = 3`
+        // means "not recognized within 3 frames: ask for the password".
         for attempt in 1..=rules.face_checks {
+            if attempt > 1 {
+                thread::sleep(rules.frame_pause);
+            }
             send(Reply::Looking {
                 attempt,
                 of: rules.face_checks,
             });
-            if self.check_before_stop(rules.looks, rules.pause) == StopOutcome::OwnerConfirmed {
+            if self.look().owner {
+                log::info!(
+                    "face checkout: owner seen in frame {attempt}/{}",
+                    rules.face_checks
+                );
                 send(Reply::Done(
                     StopOutcome::OwnerConfirmed.as_str().to_string(),
                 ));
                 return Some(StopOutcome::OwnerConfirmed);
             }
             log::info!(
-                "face checkout {attempt}/{}: owner not seen",
+                "face checkout frame {attempt}/{}: owner not seen",
                 rules.face_checks
             );
             send(Reply::NotSeen {
@@ -264,8 +276,14 @@ impl Watcher {
         }
 
         // Not the owner, as far as we can tell: refuse to stop. The caller
-        // runs the command and carries on watching.
-        send(Reply::Done(StopOutcome::Denied.as_str().to_string()));
+        // runs the command, then carries on watching, or with
+        // `command_once` stops (so `stop` is told which).
+        let reply = if rules.command_once {
+            StopOutcome::CommandOnce
+        } else {
+            StopOutcome::Denied
+        };
+        send(Reply::Done(reply.as_str().to_string()));
         Some(StopOutcome::Denied)
     }
 
@@ -301,6 +319,9 @@ pub enum StopOutcome {
     /// ran, and the watcher did NOT stop. The next `nodonuts stop` starts
     /// over.
     Denied,
+    /// `command_once`: the command ran, so the watcher stopped (and turned
+    /// autostart off).
+    CommandOnce,
 }
 
 impl StopOutcome {
@@ -312,6 +333,7 @@ impl StopOutcome {
             StopOutcome::PasswordConfirmed => "password",
             StopOutcome::OwnerNotSeen => "command",
             StopOutcome::Denied => "denied",
+            StopOutcome::CommandOnce => "once",
         }
     }
 }
@@ -321,18 +343,23 @@ impl StopOutcome {
 pub struct StopRules {
     /// Whether to check at all (`face_checkout`).
     pub face_checkout: bool,
-    /// Face checkout attempts before asking for the password (`face_checks`).
+    /// `nodonuts stop`: frames to look at before asking for the password
+    /// (`face_checks`).
     pub face_checks: u32,
-    /// Camera looks per attempt.
-    pub looks: u32,
-    /// Pause between looks.
-    pub pause: Duration,
+    /// `nodonuts stop`: pause between those frames (`check_every_ms`).
+    pub frame_pause: Duration,
+    /// Stop signals (no password possible): camera looks.
+    pub signal_looks: u32,
+    /// Stop signals: pause between those looks.
+    pub signal_pause: Duration,
     /// How many password tries.
     pub password_tries: u32,
     /// Total time allowed for all password tries.
     pub password_window: Duration,
     /// How long to wait for `STOP` after a connection opens.
     pub request_timeout: Duration,
+    /// `command_once`: a refused stop also ends the watcher.
+    pub command_once: bool,
 }
 
 impl StopRules {
@@ -343,22 +370,28 @@ impl StopRules {
             // `try_from` can't fail for the validated 1..=10, but stays
             // safe if it ever could.
             face_checks: u32::try_from(config.face_checks).unwrap_or(10),
-            looks: FACE_CHECKOUT_LOOKS,
-            pause: FACE_CHECKOUT_PAUSE,
+            // Frames are paced like the watch loop's checks, so the wait is
+            // `face_checks x check_every_ms`, as for `aggressive_checks`.
+            frame_pause: Duration::from_millis(config.check_every_ms),
+            signal_looks: SIGNAL_CHECKOUT_LOOKS,
+            signal_pause: SIGNAL_CHECKOUT_PAUSE,
             // One try: a wrong password runs the command (the next
             // `nodonuts stop` can try again).
             password_tries: 1,
             password_window: Duration::from_secs(30),
             request_timeout: Duration::from_secs(5),
+            command_once: config.command_once,
         }
     }
 }
 
-/// One face checkout looks at the camera up to 8 times, 250 ms apart. Each
-/// look also takes time (frames + face models), so this is about 3 s in
-/// total on a typical laptop. It stops early as soon as the owner is seen.
-const FACE_CHECKOUT_LOOKS: u32 = 8;
-const FACE_CHECKOUT_PAUSE: Duration = Duration::from_millis(250);
+/// The face checkout for a stop signal (`kill`, logout, ...) looks at the
+/// camera up to 8 times, 250 ms apart. Each look also takes time (frames +
+/// face models), so this is about 3 s in total on a typical laptop. It
+/// stops early as soon as the owner is seen. Fixed, not `face_checks`, so a
+/// slow `check_every_ms` can't hold up a logout or shutdown.
+const SIGNAL_CHECKOUT_LOOKS: u32 = 8;
+const SIGNAL_CHECKOUT_PAUSE: Duration = Duration::from_millis(250);
 /// How long to wait for the command before exiting. Kept short so a slow
 /// command cannot hold up a logout or shutdown.
 const COMMAND_WAIT_BEFORE_EXIT: Duration = Duration::from_secs(5);
@@ -389,6 +422,33 @@ fn stop_signals() -> Vec<i32> {
         signals.extend(nix::libc::SIGRTMIN()..=nix::libc::SIGRTMAX());
     }
     signals
+}
+
+/// `command_once`: turns autostart off, both the setting and the login
+/// entry, so the next login doesn't start a watcher that would run the
+/// command again (e.g. a reboot loop when the owner isn't recognized).
+///
+/// Done *before* the command runs: a command like `reboot` may end this
+/// process before it could do it afterwards. Failures are logged; they must
+/// not stop the command from running.
+fn turn_autostart_off(paths: &Paths) {
+    // Read the file again rather than using the settings this watcher
+    // started with, so nothing else in it changes.
+    match config::load(&paths.config_file) {
+        Ok(mut settings) if settings.autostart => {
+            settings.autostart = false;
+            if let Err(error) = config::save(&paths.config_file, &settings) {
+                log::warn!("command_once: could not turn the autostart setting off: {error:#}");
+            }
+        }
+        Ok(_) => {}
+        Err(error) => log::warn!("command_once: could not read the settings: {error:#}"),
+    }
+    // Remove the login entry even if the settings couldn't be updated.
+    match autostart::sync(paths, false) {
+        Ok(_) => log::info!("command_once: autostart turned off"),
+        Err(error) => log::warn!("command_once: could not remove the login entry: {error:#}"),
+    }
 }
 
 /// How often a running watcher checks whether the log is due to be emptied.
@@ -427,6 +487,8 @@ pub fn run(paths: &Paths) -> Result<()> {
     // overwrite the winner's PID.
     let pid = std::process::id();
     files::write_private(&paths.pid_file, pid.to_string().as_bytes())?;
+    // How the previous watcher ended is no longer news.
+    let _ = std::fs::remove_file(&paths.stop_result_file);
     // An old log is emptied right away. A config that can't load is
     // reported by `watch` below; until then, keep the log as it is.
     if let Ok(config) = config::load(&paths.config_file) {
@@ -522,6 +584,9 @@ fn watch(paths: &Paths) -> Result<()> {
                 empty_log_if_due(paths, config.logs_maxdays);
             }
             if watcher.tick(SystemTime::now()) {
+                if config.command_once {
+                    turn_autostart_off(paths);
+                }
                 // Hand the camera over to the command (e.g. a script that
                 // takes a photo) and wait for it. No checks happen meanwhile;
                 // the command only runs once per absence, so nothing is
@@ -531,6 +596,11 @@ fn watch(paths: &Paths) -> Result<()> {
                 let running = runner::start(&config.command);
                 running.wait_unless(&interrupted);
                 command = Some(running);
+                // If a stop arrived meanwhile, the stop handling below goes
+                // first (and ends the watcher too, one way or another).
+                if config.command_once && !interrupted() {
+                    break 'watching StopOutcome::CommandOnce;
+                }
             }
             // After the command: its run time is not mistaken for a sleep gap.
             watcher.mark_awake(SystemTime::now());
@@ -541,7 +611,7 @@ fn watch(paths: &Paths) -> Result<()> {
         if stop.load(Ordering::Relaxed) {
             break 'watching if config.face_checkout {
                 log::info!("stop signal received; checking for the owner's face");
-                watcher.check_before_stop(rules.looks, rules.pause)
+                watcher.check_before_stop(rules.signal_looks, rules.signal_pause)
             } else {
                 StopOutcome::Unchecked
             };
@@ -557,6 +627,9 @@ fn watch(paths: &Paths) -> Result<()> {
                     None => {}
                     // Checkout failed: run the command, keep watching.
                     Some(StopOutcome::Denied) => {
+                        if config.command_once {
+                            turn_autostart_off(paths);
+                        }
                         let still_running = command.as_ref().is_some_and(|c| !c.is_done());
                         if still_running {
                             log::warn!(
@@ -568,6 +641,9 @@ fn watch(paths: &Paths) -> Result<()> {
                             let running = runner::start(&config.command);
                             running.wait_unless(&interrupted);
                             command = Some(running);
+                        }
+                        if config.command_once {
+                            break 'watching StopOutcome::CommandOnce;
                         }
                         watcher.mark_fired();
                         // The checkout took a while: not a sleep gap.
@@ -588,14 +664,23 @@ fn watch(paths: &Paths) -> Result<()> {
         StopOutcome::OwnerConfirmed => log::info!("owner recognized; stopping"),
         // `Denied` never gets here: it doesn't end the loop.
         StopOutcome::PasswordConfirmed | StopOutcome::Denied => {}
-        StopOutcome::OwnerNotSeen if command_still_running => {
-            // Running a second copy wouldn't add anything.
-            log::warn!("stop requested but the owner was not seen; the command is already running");
+        StopOutcome::CommandOnce => {
+            log::info!("the command ran; stopping (command_once)");
         }
         StopOutcome::OwnerNotSeen => {
-            log::warn!("stop requested but the owner was not seen; running the command first");
-            watcher.release_camera();
-            runner::run_and_wait(&config.command, COMMAND_WAIT_BEFORE_EXIT);
+            if config.command_once {
+                turn_autostart_off(paths);
+            }
+            if command_still_running {
+                // Running a second copy wouldn't add anything.
+                log::warn!(
+                    "stop requested but the owner was not seen; the command is already running"
+                );
+            } else {
+                log::warn!("stop requested but the owner was not seen; running the command first");
+                watcher.release_camera();
+                runner::run_and_wait(&config.command, COMMAND_WAIT_BEFORE_EXIT);
+            }
         }
     }
     // For a signal-based `nodonuts stop` to report. Not being able to write
@@ -968,16 +1053,18 @@ mod tests {
 
     // --- `nodonuts stop` over the control socket -------------------------
 
-    /// Fast rules for tests: one look per face checkout, no pauses.
+    /// Fast rules for tests: `face_checks` frames, no pauses.
     fn fast_rules(face_checks: u32) -> StopRules {
         StopRules {
             face_checkout: true,
             face_checks,
-            looks: 1,
-            pause: Duration::ZERO,
+            frame_pause: Duration::ZERO,
+            signal_looks: 1,
+            signal_pause: Duration::ZERO,
             password_tries: 3,
             password_window: Duration::from_secs(10),
             request_timeout: Duration::from_secs(2),
+            command_once: false,
         }
     }
 
@@ -1031,8 +1118,40 @@ mod tests {
     }
 
     #[test]
+    fn face_checks_counts_frames() {
+        // The owner only shows up in the 3rd frame.
+        let script = vec![Empty, Stranger, Owner];
+        // face_checks = 2: two frames without the owner, so no.
+        let mut w = watcher(script.clone(), 30, false);
+        let (connection, client) = scripted_stop("STOP\n", vec![]);
+        assert_eq!(
+            w.handle_stop_request(connection, &fast_rules(2), None),
+            Some(StopOutcome::Denied)
+        );
+        client.join().unwrap();
+        // face_checks = 3: recognized within 3 frames.
+        let mut w = watcher(script, 30, false);
+        let (connection, client) = scripted_stop("STOP\n", vec![]);
+        assert_eq!(
+            w.handle_stop_request(connection, &fast_rules(3), None),
+            Some(StopOutcome::OwnerConfirmed)
+        );
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn face_check_frames_are_paced_by_check_every_ms() {
+        let config = Config {
+            check_every_ms: 700,
+            ..Config::default()
+        };
+        let rules = StopRules::from_config(&config);
+        assert_eq!(rules.frame_pause, Duration::from_millis(700));
+    }
+
+    #[test]
     fn stop_request_retries_the_face_before_giving_up_on_it() {
-        // Not seen on the 1st face checkout, seen on the 2nd.
+        // Not seen in the 1st frame, seen in the 2nd.
         let mut w = watcher(vec![Empty, Owner], 30, false);
         let (connection, client) = scripted_stop("STOP\n", vec![]);
         let outcome = w.handle_stop_request(connection, &fast_rules(3), None);
@@ -1118,8 +1237,10 @@ mod tests {
         let mut w = watcher(vec![Empty], 30, false);
         let (connection, client) = scripted_stop("STOP\n", vec!["wrong", "right"]);
         let fast = StopRules {
-            looks: 1,
-            pause: Duration::ZERO,
+            frame_pause: Duration::ZERO,
+            // This test is about the password; `command_once` (on by
+            // default) only changes the final reply word, tested separately.
+            command_once: false,
             ..rules
         };
         assert_eq!(
@@ -1137,6 +1258,23 @@ mod tests {
             fast.face_checks
         );
         assert_eq!(replies.last(), Some(&done("denied")));
+    }
+
+    #[test]
+    fn with_command_once_a_refused_stop_is_reported_as_once() {
+        let mut w = watcher(vec![Empty], 30, false);
+        let (connection, client) = scripted_stop("STOP\n", vec![]);
+        let rules = StopRules {
+            command_once: true,
+            ..fast_rules(1)
+        };
+        // Still a refusal for the watch loop (it runs the command)...
+        assert_eq!(
+            w.handle_stop_request(connection, &rules, None),
+            Some(StopOutcome::Denied)
+        );
+        // ...but `stop` is told the watcher will stop after it.
+        assert_eq!(client.join().unwrap().last(), Some(&done("once")));
     }
 
     #[test]
@@ -1195,6 +1333,41 @@ mod tests {
             None
         );
         assert!(client.join().unwrap().is_empty());
+    }
+
+    #[test]
+    fn command_once_turns_autostart_off_setting_and_entry() {
+        let dir = std::env::temp_dir().join(format!("nodonuts-once-{}", std::process::id()));
+        let paths = Paths {
+            config_file: dir.join("config.toml"),
+            face_file: dir.join("face.toml"),
+            pid_file: dir.join("pid"),
+            lock_file: dir.join("nodonuts.lock"),
+            log_file: dir.join("log"),
+            log_started_file: dir.join("log_started"),
+            autostart_file: dir.join("autostart").join("nodonuts.desktop"),
+            stop_result_file: dir.join("last_stop"),
+            password_file: dir.join("fallback_checkout.toml"),
+            control_socket: dir.join("control.sock"),
+        };
+        let settings = Config {
+            autostart: true,
+            grace_seconds: 45,
+            ..Config::default()
+        };
+        config::save(&paths.config_file, &settings).unwrap();
+        autostart::sync(&paths, true).unwrap();
+        assert!(autostart::is_enabled(&paths));
+
+        turn_autostart_off(&paths);
+
+        let after = config::load(&paths.config_file).unwrap();
+        assert!(!after.autostart, "setting off");
+        assert_eq!(after.grace_seconds, 45, "nothing else changed");
+        assert!(!autostart::is_enabled(&paths), "login entry removed");
+        // Harmless when already off.
+        turn_autostart_off(&paths);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
