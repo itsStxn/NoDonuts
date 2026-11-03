@@ -1,11 +1,15 @@
 //! Asking for a password in the terminal without showing what is typed.
 
 use anyhow::{Context, Result, bail};
-use nix::sys::termios::{self, LocalFlags, SetArg};
+use nix::errno::Errno;
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use nix::sys::termios::{self, FlushArg, LocalFlags, SetArg};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 use signal_hook::iterator::Signals;
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::os::fd::AsFd;
 use std::thread;
+use std::time::{Duration, Instant};
 
 /// Prints `prompt` and reads one line with the typed characters hidden.
 ///
@@ -13,6 +17,17 @@ use std::thread;
 /// Ctrl+C meanwhile, echo is turned back on before exiting; otherwise the
 /// terminal would stay silent afterwards.
 pub fn read_hidden(prompt: &str) -> Result<String> {
+    match read_hidden_within(prompt, None)? {
+        Some(line) => Ok(line),
+        // Can't happen without a time limit, but no need to panic over it.
+        None => bail!("no password typed"),
+    }
+}
+
+/// Like [`read_hidden`], but gives up after `limit` (if given): returns
+/// `Ok(None)` when nothing was entered in time. Anything half-typed is
+/// thrown away, so it doesn't end up on the shell's command line.
+pub fn read_hidden_within(prompt: &str, limit: Option<Duration>) -> Result<Option<String>> {
     let stdin = io::stdin();
     if !stdin.is_terminal() {
         bail!("can't ask for a password: not running in a terminal");
@@ -43,8 +58,21 @@ pub fn read_hidden(prompt: &str) -> Result<String> {
         }
     });
 
+    // The terminal hands over input a whole line at a time, so "ready to
+    // read" means Enter was pressed, and the read below won't block.
+    let in_time = match limit {
+        Some(limit) => wait_for_line(&stdin, limit),
+        None => true,
+    };
     let mut line = String::new();
-    let read = stdin.lock().read_line(&mut line);
+    let read = if in_time {
+        stdin.lock().read_line(&mut line).map(|_| ())
+    } else {
+        // Too late: drop whatever was half-typed (it would otherwise be
+        // read by the shell once we exit).
+        let _ = termios::tcflush(&stdin, FlushArg::TCIFLUSH);
+        Ok(())
+    };
 
     // Put everything back, whatever happened.
     let _ = termios::tcsetattr(&stdin, SetArg::TCSANOW, &original);
@@ -52,9 +80,33 @@ pub fn read_hidden(prompt: &str) -> Result<String> {
     let _ = watcher.join();
     println!(); // the Enter key wasn't echoed either
 
+    if !in_time {
+        return Ok(None);
+    }
     read.context("could not read the password")?;
     // Keep spaces: the password can be anything. Only the line ending goes.
-    Ok(line.trim_end_matches(['\n', '\r']).to_string())
+    Ok(Some(line.trim_end_matches(['\n', '\r']).to_string()))
+}
+
+/// Waits up to `limit` for a full line on `stdin`. True if one arrived.
+fn wait_for_line(stdin: &io::Stdin, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // `poll` takes whole milliseconds, at most about 24 days.
+        let timeout = PollTimeout::try_from(remaining).unwrap_or(PollTimeout::MAX);
+        let mut fds = [PollFd::new(stdin.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut fds, timeout) {
+            Ok(0) => return false, // timed out
+            Ok(_) => return true,
+            // Interrupted by a signal (e.g. the terminal being resized):
+            // keep waiting for what's left.
+            Err(Errno::EINTR) if remaining.is_zero() => return false,
+            Err(Errno::EINTR) => continue,
+            // Any other problem: let the read report it.
+            Err(_) => return true,
+        }
+    }
 }
 
 /// Asks for a new password twice, to catch typos.

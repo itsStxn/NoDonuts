@@ -75,6 +75,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `face_checks` | `3` | `nodonuts stop` asks for the fallback password if you're not recognized within this many camera frames (1 to 10). Like `aggressive_checks`, it's counted in checks of `check_every_ms`: the default is 3 x 1000 ms, about 3 s |
 | `grace_seconds` | `30` | How long you may be away before the command runs |
 | `logs_maxdays` | `7` | Empty the watcher's log once it's this many days old. `0` keeps it forever. The running watcher does this, checking at start and about once a minute |
+| `pwd_ms` | `3000` | How long `nodonuts stop` gives you to type the fallback password, in ms (1 to 60000). Too slow counts as a wrong password. **Keep it small, and your password short enough to type in that time** (see [The password time limit](#the-password-time-limit-pwd_ms)) |
 | `threshold_owner` | `0.36` | Minimum similarity (0 to 1) a face needs to count as yours. **Higher is stricter:** closer to 1, strangers are rejected more reliably but your own face is missed more often (bad angle or light). Closer to 0, almost any face passes as you. Called `match_threshold` before; old config files still load |
 | `threshold_stranger` | `0.2` | A face below this similarity (0 to 1) counts as a stranger, for aggressive mode. Faces between this and `threshold_owner` are "unsure" (see [How a face is classified](#how-a-face-is-classified)). Can't be higher than `threshold_owner` |
 
@@ -275,7 +276,8 @@ your face or password), then `nodonuts config set face_checkout false` and
    "Not recognized (1/3)." for each frame that doesn't show you.
 2. **You're seen in any of those frames:** it stops quietly.
 3. Not seen within `face_checks` frames: it asks for your **fallback password** once (hidden as
-   you type, within 30 seconds). **Right password:** it stops quietly.
+   you type, within `pwd_ms`: 3 s by default). **Right password:** it stops
+   quietly. Too slow counts as wrong (see [The password time limit](#the-password-time-limit-pwd_ms)).
 4. Otherwise (wrong password, no answer, Ctrl+C, or no password set): your
    command runs (e.g. locks the screen). Then:
    - with `command_once` (the default): the watcher stops and turns
@@ -310,6 +312,28 @@ light, an odd angle, or (on Linux) a video call holding the camera.
 - **Forgot it?** Stop the watcher with your face, or with `kill <pid>`
   (your command runs once, then it stops; `nodonuts status` shows the PID).
   Then set a new password with `nodonuts password`.
+
+### The password time limit (`pwd_ms`)
+
+While the watcher waits for the password, it isn't watching: no camera
+checks, and your command can't run. Without a limit, someone at your
+laptop could run `nodonuts stop`, leave the prompt open, and use that time
+for anything else. So the password must be typed within `pwd_ms`
+(3000 ms by default), and the prompt shows the limit:
+`Fallback password (3 s):`. Too slow counts as a wrong password: the
+command runs.
+
+- **Keep `pwd_ms` small.** The smaller it is, the less free time a
+  stranger gets.
+- **The smaller `pwd_ms`, the shorter your password needs to be,** so you
+  can type it in time. 3 s is enough for a short word or a few characters
+  you type from memory. Something like `nodonuts config set pwd_ms 2000`
+  with a 4-6 character password works well.
+- A short password is fine here: there's only one try per `nodonuts stop`,
+  and every wrong or late try runs your command (e.g. locks the screen).
+  Guessing it would take many tries, and each one locks the laptop.
+- Change it while the watcher is stopped:
+  `nodonuts config set pwd_ms 2500`.
 
 - **The watcher does the check, not `nodonuts stop`.** So `kill <pid>`, `pkill
   nodonuts` and `pkill -<almost any signal> nodonuts` all go through it. That

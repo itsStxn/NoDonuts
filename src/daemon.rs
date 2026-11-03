@@ -203,19 +203,26 @@ fn talk_to_watcher(connection: UnixStream) -> Option<String> {
             Some(Reply::Looking { attempt: 1, .. }) => println!("Look at the camera..."),
             Some(Reply::Looking { .. }) => {}
             Some(Reply::NotSeen { attempt, of }) => println!("Not recognized ({attempt}/{of})."),
-            Some(Reply::Password { attempt, of }) => {
+            Some(Reply::Password { attempt, of, ms }) => {
+                let seconds = format_seconds(ms);
                 let label = if of > 1 {
-                    format!("Fallback password ({attempt}/{of}): ")
+                    format!("Fallback password ({attempt}/{of}, {seconds}): ")
                 } else {
-                    "Fallback password: ".to_string()
+                    format!("Fallback password ({seconds}): ")
                 };
-                // If we can't ask (no terminal), send an empty answer: it
-                // counts as wrong, which ends in the command running.
-                let typed = prompt::read_hidden(&label).unwrap_or_else(|error| {
-                    eprintln!("{error:#}");
-                    String::new()
-                });
-                writer.write_all(format!("{typed}\n").as_bytes()).ok()?;
+                // The watcher only waits `pwd_ms`, so stop asking then too.
+                match prompt::read_hidden_within(&label, Some(Duration::from_millis(ms))) {
+                    Ok(Some(typed)) => writer.write_all(format!("{typed}\n").as_bytes()).ok()?,
+                    // Too slow: send nothing; the watcher has given up too
+                    // and its answer follows.
+                    Ok(None) => println!("Too slow: no password typed within {seconds}."),
+                    // Can't ask (no terminal): an empty answer counts as
+                    // wrong, which ends in the command running.
+                    Err(error) => {
+                        eprintln!("{error:#}");
+                        writer.write_all(b"\n").ok()?;
+                    }
+                }
             }
             Some(Reply::Wrong) => println!("Wrong password."),
             Some(Reply::Done(outcome)) => return Some(outcome),
@@ -223,6 +230,18 @@ fn talk_to_watcher(connection: UnixStream) -> Option<String> {
         }
     }
     None
+}
+
+/// `3000` -> `"3 s"`, `2500` -> `"2.5 s"`: the password time limit as shown
+/// at the prompt, to a tenth of a second. The watcher sends the exact time
+/// left (e.g. 2999 ms), which reads better rounded.
+fn format_seconds(ms: u64) -> String {
+    let tenths = (ms + 50) / 100;
+    if tenths.is_multiple_of(10) {
+        format!("{} s", tenths / 10)
+    } else {
+        format!("{}.{} s", tenths / 10, tenths % 10)
+    }
 }
 
 /// May `stop` force-kill a watcher that hasn't exited in time? Only if the
@@ -345,6 +364,14 @@ fn remove_pid_file(paths: &Paths) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn password_time_limits_read_naturally() {
+        assert_eq!(format_seconds(3000), "3 s");
+        assert_eq!(format_seconds(2500), "2.5 s");
+        assert_eq!(format_seconds(2999), "3 s");
+        assert_eq!(format_seconds(1200), "1.2 s");
+    }
 
     #[test]
     fn force_stop_only_after_a_confirmed_quiet_stop() {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
-pub const KEYS: [&str; 13] = [
+pub const KEYS: [&str; 14] = [
     "aggressive_checks",
     "aggressive_mode",
     "autostart",
@@ -18,6 +18,7 @@ pub const KEYS: [&str; 13] = [
     "face_checks",
     "grace_seconds",
     "logs_maxdays",
+    "pwd_ms",
     "threshold_owner",
     "threshold_stranger",
 ];
@@ -67,6 +68,11 @@ pub struct Config {
     pub grace_seconds: u64,
     /// Empty the watcher's log once it's this many days old. 0 = never.
     pub logs_maxdays: u64,
+    /// How long `nodonuts stop` gives to type the fallback password, in
+    /// milliseconds. Kept short: while the watcher waits for the password
+    /// it isn't checking the camera, so a long wait is free time for
+    /// someone at the laptop. 1 to 60000.
+    pub pwd_ms: u64,
     /// Minimum similarity (0 to 1) for a face to count as the owner.
     /// `alias`: config files saved before the rename used `match_threshold`;
     /// they still load, and are saved with the new name.
@@ -100,6 +106,8 @@ impl Default for Config {
             face_checks: 3,
             grace_seconds: 30,
             logs_maxdays: 7,
+            // Enough for a short password typed from memory.
+            pwd_ms: 3000,
             // SFace's recommended threshold for cosine similarity.
             threshold_owner: 0.36,
             // Well below the owner's: a turned or badly lit owner usually
@@ -149,6 +157,11 @@ impl Config {
         if self.logs_maxdays > 3650 {
             bail!("logs_maxdays must be a whole number from 0 (never empty) to 3650");
         }
+        // Capped at a minute: `nodonuts stop` waits at most that long for
+        // each message from the watcher.
+        if !(1..=60_000).contains(&self.pwd_ms) {
+            bail!("pwd_ms must be a whole number from 1 to 60000");
+        }
         Ok(())
     }
 
@@ -168,6 +181,7 @@ impl Config {
             "face_checkout" => self.face_checkout.to_string(),
             "face_checks" => self.face_checks.to_string(),
             "logs_maxdays" => self.logs_maxdays.to_string(),
+            "pwd_ms" => self.pwd_ms.to_string(),
             _ => bail!(unknown_key(key)),
         };
         Ok(value)
@@ -197,6 +211,12 @@ impl Config {
             // a typo'd name can't slip in.
             "camera" => bail!("choose the camera with `nodonuts camera`"),
             "face_checkout" => updated.face_checkout = parse_on_off(key, value)?,
+            "pwd_ms" => {
+                updated.pwd_ms = value
+                    .trim()
+                    .parse()
+                    .with_context(|| format!("{key} must be a whole number from 1 to 60000"))?
+            }
             "logs_maxdays" => {
                 updated.logs_maxdays = value.trim().parse().with_context(|| {
                     format!("{key} must be a whole number from 0 (never empty) to 3650")
@@ -305,6 +325,10 @@ mod tests {
         config.set("logs_maxdays", "0").unwrap();
         config.set("logs_maxdays", "30").unwrap();
         assert_eq!(config.get("logs_maxdays").unwrap(), "30");
+        config.set("pwd_ms", "1").unwrap();
+        config.set("pwd_ms", "60000").unwrap();
+        config.set("pwd_ms", "2500").unwrap();
+        assert_eq!(config.get("pwd_ms").unwrap(), "2500");
         config.set("face_checks", "1").unwrap();
         config.set("face_checks", "10").unwrap();
         assert_eq!(config.get("face_checks").unwrap(), "10");
@@ -395,6 +419,10 @@ mod tests {
             ("logs_maxdays", "-1"),
             ("logs_maxdays", "1.5"),
             ("logs_maxdays", "3651"),
+            ("pwd_ms", "0"),
+            ("pwd_ms", "60001"),
+            ("pwd_ms", "1.5"),
+            ("pwd_ms", "-1"),
             ("aggressive_checks", "0"),
             ("aggressive_checks", "-1"),
             ("aggressive_checks", "1.5"),
@@ -425,6 +453,7 @@ mod tests {
         assert!(config.face_checkout);
         assert!(config.command_once);
         assert_eq!(config.aggressive_checks, 2);
+        assert_eq!(config.pwd_ms, 3000);
     }
 
     #[test]

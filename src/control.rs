@@ -11,7 +11,8 @@
 //! watcher -> stop    : LOOKING 1 3      (looking at frame 1 of 3)
 //! watcher -> stop    : NOT_SEEN 1 3     (frame 1 didn't show the owner)
 //! ...
-//! watcher -> stop    : PASSWORD 1 3     (type the password, try 1 of 3)
+//! watcher -> stop    : PASSWORD 1 3 3000 (type the password, try 1 of 3,
+//!                                         within 3000 ms: `pwd_ms`)
 //! stop    -> watcher : <the password>
 //! watcher -> stop    : WRONG            (or DONE ...)
 //! watcher -> stop    : DONE owner       (how it ended; then the watcher exits)
@@ -40,12 +41,16 @@ pub enum Reply {
         /// How many attempts there are.
         of: u32,
     },
-    /// Waiting for the fallback password: try `attempt` of `of`.
+    /// Waiting for the fallback password: try `attempt` of `of`, to be
+    /// typed within `ms` milliseconds.
     Password {
         /// This try, from 1.
         attempt: u32,
         /// How many tries there are.
         of: u32,
+        /// Time left to type it (`pwd_ms`), so `stop` gives up when the
+        /// watcher does.
+        ms: u64,
     },
     /// The password was wrong.
     Wrong,
@@ -59,7 +64,7 @@ impl Reply {
         match self {
             Reply::Looking { attempt, of } => format!("LOOKING {attempt} {of}\n"),
             Reply::NotSeen { attempt, of } => format!("NOT_SEEN {attempt} {of}\n"),
-            Reply::Password { attempt, of } => format!("PASSWORD {attempt} {of}\n"),
+            Reply::Password { attempt, of, ms } => format!("PASSWORD {attempt} {of} {ms}\n"),
             Reply::Wrong => "WRONG\n".to_string(),
             Reply::Done(outcome) => format!("DONE {outcome}\n"),
         }
@@ -69,20 +74,24 @@ impl Reply {
     pub fn parse(line: &str) -> Option<Reply> {
         let mut words = line.split_whitespace();
         let kind = words.next()?;
-        // A small helper: the next word as a number.
-        let mut number = || -> Option<u32> { words.next()?.parse().ok() };
+        // The remaining words as numbers (`None` if any isn't one).
+        let numbers: Option<Vec<u64>> = words.map(|word| word.parse().ok()).collect();
+        let numbers = numbers.unwrap_or_default();
+        // Counts are small; `try_from` refuses anything that doesn't fit.
+        let count = |i: usize| -> Option<u32> { u32::try_from(*numbers.get(i)?).ok() };
         match kind {
             "LOOKING" => Some(Reply::Looking {
-                attempt: number()?,
-                of: number()?,
+                attempt: count(0)?,
+                of: count(1)?,
             }),
             "NOT_SEEN" => Some(Reply::NotSeen {
-                attempt: number()?,
-                of: number()?,
+                attempt: count(0)?,
+                of: count(1)?,
             }),
             "PASSWORD" => Some(Reply::Password {
-                attempt: number()?,
-                of: number()?,
+                attempt: count(0)?,
+                of: count(1)?,
+                ms: *numbers.get(2)?,
             }),
             "WRONG" => Some(Reply::Wrong),
             "DONE" => Some(Reply::Done(line.split_whitespace().nth(1)?.to_string())),
@@ -100,7 +109,11 @@ mod tests {
         for reply in [
             Reply::Looking { attempt: 1, of: 3 },
             Reply::NotSeen { attempt: 2, of: 3 },
-            Reply::Password { attempt: 3, of: 3 },
+            Reply::Password {
+                attempt: 3,
+                of: 3,
+                ms: 3000,
+            },
             Reply::Wrong,
             Reply::Done("owner".to_string()),
         ] {
@@ -110,7 +123,15 @@ mod tests {
 
     #[test]
     fn garbage_is_not_a_reply() {
-        for line in ["", "HELLO", "LOOKING", "LOOKING x 3", "DONE"] {
+        for line in [
+            "",
+            "HELLO",
+            "LOOKING",
+            "LOOKING x 3",
+            "DONE",
+            "PASSWORD 1 1", // no time window
+            "LOOKING 1 99999999999",
+        ] {
             assert_eq!(Reply::parse(line), None, "{line:?}");
         }
     }

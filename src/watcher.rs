@@ -239,8 +239,9 @@ impl Watcher {
         }
 
         if let Some(hash) = password_hash {
-            // One deadline for all tries, so someone sitting at the prompt
-            // can't keep the watcher (and the command) waiting for long.
+            // One deadline (`pwd_ms`) for all tries: while we wait here the
+            // camera isn't checked and the command can't run, so someone
+            // sitting at the prompt must not get that time for free.
             let deadline = Instant::now() + rules.password_window;
             for attempt in 1..=rules.password_tries {
                 let remaining = deadline.saturating_duration_since(Instant::now());
@@ -251,13 +252,18 @@ impl Watcher {
                 send(Reply::Password {
                     attempt,
                     of: rules.password_tries,
+                    ms: u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX),
                 });
                 let _ = reader.get_ref().set_read_timeout(Some(remaining));
                 line.clear();
                 match reader.read_line(&mut line) {
                     Ok(read) if read > 0 => {}
-                    // Timed out, or `stop` went away: no more tries.
-                    _ => break,
+                    // Timed out (`pwd_ms`), or `stop` went away: no more
+                    // tries.
+                    _ => {
+                        log::warn!("no fallback password typed within pwd_ms");
+                        break;
+                    }
                 }
                 let typed = line.trim_end_matches(['\n', '\r']);
                 if password::verify(typed, hash) {
@@ -354,7 +360,7 @@ pub struct StopRules {
     pub signal_pause: Duration,
     /// How many password tries.
     pub password_tries: u32,
-    /// Total time allowed for all password tries.
+    /// Total time allowed for all password tries (`pwd_ms`).
     pub password_window: Duration,
     /// How long to wait for `STOP` after a connection opens.
     pub request_timeout: Duration,
@@ -378,7 +384,7 @@ impl StopRules {
             // One try: a wrong password runs the command (the next
             // `nodonuts stop` can try again).
             password_tries: 1,
-            password_window: Duration::from_secs(30),
+            password_window: Duration::from_millis(config.pwd_ms),
             request_timeout: Duration::from_secs(5),
             command_once: config.command_once,
         }
@@ -1083,7 +1089,12 @@ mod tests {
             let reader = BufReader::new(stop_side.try_clone().unwrap());
             for line in reader.lines() {
                 let Ok(line) = line else { break };
-                let reply = Reply::parse(&line).unwrap();
+                let reply = match Reply::parse(&line).unwrap() {
+                    // The time left depends on timing; recorded as 0 so
+                    // tests can compare whole reply lists.
+                    Reply::Password { attempt, of, .. } => Reply::Password { attempt, of, ms: 0 },
+                    other => other,
+                };
                 replies.push(reply.clone());
                 match reply {
                     Reply::Password { .. } => match passwords.next() {
@@ -1181,11 +1192,76 @@ mod tests {
                 Reply::NotSeen { attempt: 1, of: 2 },
                 Reply::Looking { attempt: 2, of: 2 },
                 Reply::NotSeen { attempt: 2, of: 2 },
-                Reply::Password { attempt: 1, of: 3 },
+                Reply::Password {
+                    attempt: 1,
+                    of: 3,
+                    ms: 0
+                },
                 Reply::Wrong,
-                Reply::Password { attempt: 2, of: 3 },
+                Reply::Password {
+                    attempt: 2,
+                    of: 3,
+                    ms: 0
+                },
                 done("password"),
             ]
+        );
+    }
+
+    #[test]
+    fn the_password_must_be_typed_within_pwd_ms() {
+        let hash = password::hash("right").unwrap();
+        let mut w = watcher(vec![Empty], 30, false);
+        let (watcher_side, mut stop_side) = UnixStream::pair().unwrap();
+        // A `stop` that types the right password, but too late.
+        let client = thread::spawn(move || {
+            stop_side.write_all(b"STOP\n").unwrap();
+            let mut replies = Vec::new();
+            let reader = BufReader::new(stop_side.try_clone().unwrap());
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                let reply = Reply::parse(&line).unwrap();
+                replies.push(reply.clone());
+                match reply {
+                    Reply::Password { .. } => {
+                        thread::sleep(Duration::from_millis(600));
+                        let _ = stop_side.write_all(b"right\n");
+                    }
+                    Reply::Done(_) => break,
+                    _ => {}
+                }
+            }
+            replies
+        });
+        let rules = StopRules {
+            password_window: Duration::from_millis(200),
+            ..fast_rules(1)
+        };
+        assert_eq!(
+            w.handle_stop_request(watcher_side, &rules, Some(&hash)),
+            Some(StopOutcome::Denied)
+        );
+        let replies = client.join().unwrap();
+        // `stop` is told how long it has, so its prompt can give up too.
+        let window = replies.iter().find_map(|r| match r {
+            Reply::Password { ms, .. } => Some(*ms),
+            _ => None,
+        });
+        assert!(window.is_some_and(|ms| ms <= 200), "{window:?}");
+        assert_eq!(replies.last(), Some(&done("denied")));
+    }
+
+    #[test]
+    fn the_password_window_comes_from_pwd_ms() {
+        let config = Config {
+            pwd_ms: 1500,
+            ..Config::default()
+        };
+        let rules = StopRules::from_config(&config);
+        assert_eq!(rules.password_window, Duration::from_millis(1500));
+        assert_eq!(
+            StopRules::from_config(&Config::default()).password_window,
+            Duration::from_millis(3000)
         );
     }
 
@@ -1298,7 +1374,11 @@ mod tests {
         );
         let replies = client.join().unwrap();
         assert_eq!(replies[0], Reply::Looking { attempt: 1, of: 2 });
-        assert!(replies.contains(&Reply::Password { attempt: 3, of: 3 }));
+        assert!(replies.contains(&Reply::Password {
+            attempt: 3,
+            of: 3,
+            ms: 0
+        }));
     }
 
     #[test]
