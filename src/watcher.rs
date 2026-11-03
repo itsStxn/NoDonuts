@@ -36,7 +36,8 @@ use std::time::{Duration, Instant, SystemTime};
 pub struct Watcher {
     camera: Box<dyn FrameSource>,
     finder: Box<dyn FaceFinder>,
-    owner: Embedding,
+    /// The owner's face, one embedding per enrolled pose.
+    owner: Vec<Embedding>,
     /// At or above: the owner.
     threshold_owner: f64,
     /// Below: a stranger. In between: unsure (neither).
@@ -60,7 +61,7 @@ impl Watcher {
     pub fn new(
         camera: Box<dyn FrameSource>,
         finder: Box<dyn FaceFinder>,
-        owner: Embedding,
+        owner: Vec<Embedding>,
         config: &Config,
     ) -> Watcher {
         Watcher {
@@ -454,6 +455,11 @@ fn watch(paths: &Paths) -> Result<()> {
     // started with.
     let config = config::load(&paths.config_file)?;
     let owner = enroll::load(&paths.face_file)?;
+    if owner.len() == 1 {
+        // A face enrolled before guided poses: works, but turned heads match
+        // less well.
+        log::info!("enrolled face has 1 pose; re-enroll for better matching at an angle");
+    }
     // Kept in memory: changing the file while we run has no effect.
     let password_hash = password::load(&paths.password_file)?;
 
@@ -759,7 +765,12 @@ mod tests {
             // `..` fills the remaining fields from the defaults.
             ..Config::default()
         };
-        Watcher::new(Box::new(camera), Box::new(finder), unit_vector(0), &config)
+        Watcher::new(
+            Box::new(camera),
+            Box::new(finder),
+            vec![unit_vector(0)],
+            &config,
+        )
     }
 
     /// Runs one tick per second of fake time; returns the seconds at which
@@ -830,7 +841,7 @@ mod tests {
         let mut w = Watcher::new(
             Box::new(PanickingCamera),
             Box::new(finder),
-            unit_vector(0),
+            vec![unit_vector(0)],
             &config,
         );
         assert_eq!(run_seconds(&mut w, 5), vec![1]);
@@ -942,7 +953,7 @@ mod tests {
         let mut w = Watcher::new(
             Box::new(camera),
             Box::new(finder),
-            unit_vector(0),
+            vec![unit_vector(0)],
             &Config::default(),
         );
         run_seconds(&mut w, 1);
@@ -1241,7 +1252,7 @@ mod tests {
         let mut w = Watcher::new(
             Box::new(camera),
             Box::new(FakeFinder { current: shared }),
-            unit_vector(0),
+            vec![unit_vector(0)],
             &config,
         );
         // Unsure face from 2 s: aggressive fires after 2 checks, at 3 s.

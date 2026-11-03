@@ -32,18 +32,27 @@ pub trait FaceFinder {
     fn find_faces(&self, image: &RgbImage) -> Result<Vec<Face>>;
 }
 
+/// How much `face` looks like the owner: its similarity to the best-matching
+/// enrolled pose (straight, turned left, ...). 0 if nothing is enrolled.
+pub fn best_similarity(face: &[f32], owner: &[Embedding]) -> f32 {
+    owner
+        .iter()
+        .map(|pose| cosine_similarity(face, pose))
+        .fold(0.0, f32::max)
+}
+
 /// Is any of these faces someone other than the owner?
-pub fn has_stranger(faces: &[Face], owner: &[f32], threshold: f64) -> bool {
+pub fn has_stranger(faces: &[Face], owner: &[Embedding], threshold: f64) -> bool {
     faces
         .iter()
-        .any(|face| f64::from(cosine_similarity(&face.embedding, owner)) < threshold)
+        .any(|face| f64::from(best_similarity(&face.embedding, owner)) < threshold)
 }
 
 /// Is any of these faces the owner?
-pub fn is_owner(faces: &[Face], owner: &[f32], threshold: f64) -> bool {
+pub fn is_owner(faces: &[Face], owner: &[Embedding], threshold: f64) -> bool {
     faces
         .iter()
-        .any(|face| f64::from(cosine_similarity(&face.embedding, owner)) >= threshold)
+        .any(|face| f64::from(best_similarity(&face.embedding, owner)) >= threshold)
 }
 
 /// How alike two embeddings are: 1.0 = same direction, 0 = unrelated.
@@ -391,7 +400,7 @@ mod tests {
 
     #[test]
     fn is_owner_uses_the_threshold() {
-        let owner = vec![1.0, 0.0];
+        let owner = vec![vec![1.0, 0.0]];
         let close = face(vec![0.9, 0.1]);
         let far = face(vec![0.0, 1.0]);
         assert!(is_owner(&[far.clone(), close], &owner, 0.36));
@@ -401,12 +410,26 @@ mod tests {
 
     #[test]
     fn has_stranger_finds_non_owner_faces() {
-        let owner = vec![1.0, 0.0];
+        let owner = vec![vec![1.0, 0.0]];
         let close = face(vec![0.9, 0.1]);
         let far = face(vec![0.0, 1.0]);
         assert!(has_stranger(&[close.clone(), far], &owner, 0.36));
         assert!(!has_stranger(&[close], &owner, 0.36));
         assert!(!has_stranger(&[], &owner, 0.36));
+    }
+
+    #[test]
+    fn a_face_matches_its_best_enrolled_pose() {
+        // Two poses: straight (axis 0) and turned (axis 1).
+        let owner = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
+        let turned = face(vec![0.1, 0.95, 0.0]);
+        assert!(best_similarity(&turned.embedding, &owner) > 0.9);
+        assert!(is_owner(&[turned.clone()], &owner, 0.36));
+        assert!(!has_stranger(&[turned], &owner, 0.2));
+        // Unlike every pose: a stranger.
+        let other = face(vec![0.0, 0.0, 1.0]);
+        assert!(has_stranger(&[other], &owner, 0.2));
+        assert_eq!(best_similarity(&[1.0, 0.0, 0.0], &[]), 0.0);
     }
 
     #[test]

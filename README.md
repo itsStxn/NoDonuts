@@ -15,7 +15,7 @@ if you don't use Brazil CLI.
 - **No photos or video are ever saved.** Camera frames are looked at in
   memory and thrown away, during enrollment and while watching.
 - **What is stored is a face embedding:** 128 numbers that describe your
-  face, averaged over the enrollment frames. It is not a picture, and
+  face, one set per enrollment pose (4 in all). It is not a picture, and
   NoDonuts has no way to turn it back into one. It is used only to answer
   "is this the owner?".
 - **Nothing leaves the laptop.** NoDonuts makes no network connections. The
@@ -26,7 +26,7 @@ if you don't use Brazil CLI.
 ## Quick start
 
 ```bash
-nodonuts enroll                      # look at the camera for a few seconds
+nodonuts enroll                      # follow the prompts: 4 poses, 10 shots
 nodonuts config set command 'loginctl lock-session'   # Linux example
 nodonuts config set grace_seconds 30
 nodonuts start                       # watches in the background; asks for a fallback password the first time
@@ -40,7 +40,7 @@ macOS lock example: `pmset displaysleepnow`.
 
 | Command | Does |
 |---|---|
-| `nodonuts enroll` | Captures 10 frames of your face and saves the average embedding |
+| `nodonuts enroll` | Guides you through 4 poses (10 shots) and saves your face (see [Enrolling](#enrolling)) |
 | `nodonuts start` | Starts the background watcher. Only one can run: a second `start` (even at the same moment, e.g. with autostart) says it's already watching |
 | `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face, or the fallback password) |
 | `nodonuts status` | Shows whether it is running (and its PID), whether it starts at login, and whether a fallback password is set |
@@ -288,6 +288,33 @@ light, an odd angle, or (on Linux) a video call holding the camera.
   command, but think twice with something like `reboot`.
 - Changing settings needs your face too, since it means stopping the watcher
   first.
+
+## Enrolling
+
+`nodonuts enroll` guides you through the poses you'll actually be in while
+working, so you're recognized in them too. Press Enter before each pose; a
+short pause before each shot lets you settle into its variation:
+
+| Pose | Shots |
+|---|---|
+| 1. Straight at the camera | neutral; smile; a little closer; a little further back |
+| 2. Head turned a little to your left | about 20°; about 30° |
+| 3. Head turned a little to your right | about 20°; about 30° |
+| 4. Head down, as if reading the keyboard | at the keyboard; at the bottom of the screen |
+
+- **Live feedback.** If a shot doesn't work, it says why and tries again:
+  no face found (in a turned pose: "too far, turn back a little"), face
+  too small ("move a little closer"), or a face that doesn't match the
+  first shots ("make sure only you are in front of the camera").
+- **One description per pose is saved** (4 sets of 128 numbers, never a
+  picture). A face counts as you if it matches any pose, so a turned head
+  is matched against your turned poses rather than your straight one.
+- Turn only partway (both eyes visible): past about 45°, the camera
+  software can't find a face at all.
+- Face files from before guided poses still work, as a single pose; the
+  log suggests re-enrolling.
+- Enrollment uses the camera chosen with `nodonuts camera`, and only works
+  while the watcher is stopped.
 
 ## Choosing a camera
 
