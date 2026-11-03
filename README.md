@@ -6,7 +6,9 @@ your choice (lock the screen, suspend, anything in bash) once you've been gone
 for a while.
 
 See [INSTALLATION.md](INSTALLATION.md) to build and install it on Linux or
-macOS.
+macOS, or
+[INSTALLATION (No Brazil CLI).md](INSTALLATION%20%28No%20Brazil%20CLI%29.md)
+if you don't use Brazil CLI.
 
 ## Privacy: no faces are saved
 
@@ -301,7 +303,9 @@ of files is in [INSTALLATION.md](INSTALLATION.md#where-files-live).
 ## Development
 
 Building, installing the binary onto your `PATH`, updating and uninstalling
-are covered in [INSTALLATION.md](INSTALLATION.md).
+are covered in [INSTALLATION.md](INSTALLATION.md) (with Brazil) and
+[INSTALLATION (No Brazil CLI).md](INSTALLATION%20%28No%20Brazil%20CLI%29.md)
+(plain `cargo`).
 
 ```bash
 brazil-build release        # fmt, clippy (warnings denied), tests, binary
