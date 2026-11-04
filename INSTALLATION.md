@@ -167,4 +167,3 @@ To delete the source too: `rm -rf ~/NoDonuts`.
 | Log | `~/.local/share/nodonuts/nodonuts.log` | `~/Library/Application Support/nodonuts/nodonuts.log` |
 | Login entry (`autostart`) | `~/.config/autostart/nodonuts.desktop` | `~/Library/LaunchAgents/com.amazon.nodonuts.plist` |
 | Alert (`alert_location`), written when your command runs | `~/Desktop/NODONUTS ALERT.txt` | `~/Desktop/NODONUTS ALERT.txt` |
-
