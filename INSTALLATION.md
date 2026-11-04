@@ -1,26 +1,22 @@
 # Installing NoDonuts
 
 NoDonuts is built from source and installed as a single file,
-`~/.local/bin/nodonuts`. No `sudo` needed.
+`~/.local/bin/nodonuts`.
 
-You need the Brazil CLI (`brazil`), which comes with Amazon Toolbox. (No
-Brazil? See
-[INSTALLATION (No Brazil CLI).md](INSTALLATION%20%28No%20Brazil%20CLI%29.md).)
-Pick your system, copy the commands into a terminal, and press Enter. The
-source goes into a Brazil workspace at `~/NoDonuts`.
+This guide uses only `git` and Rust's `cargo`. Pick your system, copy the commands into
+a terminal, and press Enter. The source goes into `~/NoDonuts`.
 
 ## Linux (Ubuntu)
 
 ```bash
-cd ~
-brazil ws create --name NoDonuts --versionSet NoDonuts/development
-cd NoDonuts
-brazil ws use --package NoDonuts
-brazil ws use --platform AL2023_x86_64      # ARM laptop (`uname -m` says aarch64)? Use AL2023_aarch64
-cd src/NoDonuts
-brazil-build release
+sudo apt install -y git curl build-essential libclang-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source ~/.cargo/env
+git clone https://github.com/itsStxn/NoDonuts ~/NoDonuts        # Feel free to choose a different location than ~/
+cd ~/NoDonuts                                                   # If you chose a different location, make sure to use that
+cargo build --release
 mkdir -p ~/.local/bin
-install -m 755 build/bin/nodonuts.orig ~/.local/bin/nodonuts
+install -m 755 target/release/nodonuts ~/.local/bin/nodonuts
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 nodonuts --version
@@ -29,8 +25,12 @@ nodonuts --version
 The last line prints `nodonuts <version>`. The build takes a few minutes the
 first time.
 
-Install `nodonuts.orig`, not `build/bin/nodonuts`: the latter is a wrapper
-that only works inside Brazil.
+- The `apt` line installs a C compiler and libclang: the camera library
+  needs them to build on Linux. It's the only line that needs `sudo`.
+- The `curl` line installs Rust. Skip it if you already have Rust 1.85 or
+  newer (`rustc --version`).
+- `source ~/.cargo/env` makes `cargo` work in this terminal. New terminals
+  pick it up on their own.
 
 ## macOS
 
@@ -46,11 +46,8 @@ Then:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source ~/.cargo/env
-cd ~
-brazil ws create --name NoDonuts --versionSet NoDonuts/development
-cd NoDonuts
-brazil ws use --package NoDonuts
-cd src/NoDonuts
+git clone https://github.com/itsStxn/NoDonuts ~/NoDonuts        # Feel free to choose a different location than ~/
+cd ~/NoDonuts                                                   # If you chose a different location, make sure to use that
 cargo build --release
 mkdir -p ~/.local/bin
 install -m 755 target/release/nodonuts ~/.local/bin/nodonuts
@@ -61,14 +58,12 @@ nodonuts --version
 
 The last line prints `nodonuts 0.2.0`.
 
-- The `curl` line installs Rust. Skip it if you already have Rust.
-- `source ~/.cargo/env` makes `cargo` work in this terminal. New
-  terminals pick it up on their own.
-- The `PATH` line uses `$HOME` rather than `~` on purpose: `~` isn't
-  expanded inside double quotes, so `"~/.local/bin"` would not work.
-- `cd src/NoDonuts` matters: `Cargo.toml` is there, not in the workspace
-  root.
-- Brazil can't build for macOS, so the build uses Cargo.
+- The `curl` line installs Rust. Skip it if you already have Rust 1.85 or
+  newer.
+- `source ~/.cargo/env` makes `cargo` work in this terminal.
+
+On both systems, the `PATH` line uses `$HOME` rather than `~` on purpose:
+`~` isn't expanded inside double quotes, so `"~/.local/bin"` would not work.
 
 ## After installing
 
@@ -92,23 +87,11 @@ See [README.md](README.md) for every command and setting.
 
 ## Update
 
-Linux:
-
-```bash
-cd ~/NoDonuts/src/NoDonuts
-git pull
-brazil ws sync --metadata
-brazil-build release
-nodonuts stop
-install -m 755 build/bin/nodonuts.orig ~/.local/bin/nodonuts
-nodonuts start
-```
-
-macOS:
+Linux and macOS:
 
 ```bash
 source ~/.cargo/env
-cd ~/NoDonuts/src/NoDonuts
+cd ~/NoDonuts
 git pull
 cargo build --release
 nodonuts stop
@@ -123,13 +106,11 @@ Your enrolled face and settings are kept.
   asks for your fallback password. If that fails too, your command runs and
   the watcher keeps running; run `nodonuts stop` again. The same goes for
   uninstalling.
-
 - Re-enroll (`nodonuts enroll`) only if an update replaces the face model
   (`models/sface.onnx`).
 - **Moving the program:** `autostart` stores the program's full path. If you
   move `nodonuts`, stop the watcher, then run `nodonuts refresh` from its
-  new location.
-  `nodonuts status` warns when the stored path is broken.
+  new location. `nodonuts status` warns when the stored path is broken.
 
 ## Uninstall
 
@@ -149,6 +130,8 @@ rm -rf ~/Library/Application\ Support/nodonuts            # macOS
 If your command ever ran, also delete `NODONUTS ALERT.txt` from your desktop
 (or from your `alert_location` folder).
 
+To delete the source too: `rm -rf ~/NoDonuts`.
+
 ## Camera access
 
 - **Linux:** the logged-in desktop user usually has access. If
@@ -163,10 +146,13 @@ If your command ever ran, also delete `NODONUTS ALERT.txt` from your desktop
 
 | Problem | Fix |
 |---|---|
-| `cargo: command not found` (macOS) | Run `source ~/.cargo/env` |
-| `could not find Cargo.toml` | Run `cd ~/NoDonuts/src/NoDonuts` first |
-| `brazil ws create` says the workspace exists | You already installed once. Use [Update](#update) |
-| A `brazil` command fails with an authentication error | Run `mwinit`, then try again |
+| `cargo: command not found` | Run `source ~/.cargo/env` |
+| `could not find Cargo.toml` | Run `cd ~/NoDonuts` first |
+| `Unable to find libclang` (Linux) | Run `sudo apt install libclang-dev`, then build again |
+| `linker 'cc' not found` (Linux) | Run `sudo apt install build-essential` |
+| `feature edition2024 is required` | Your Rust is too old: run `rustup update` |
+| `git clone` fails with an authentication error | Run `mwinit`, then try again |
+| `git clone` says the destination already exists | You already installed once. Use [Update](#update) |
 | `nodonuts: command not found` | Open a new terminal |
 
 ## Where files live
@@ -174,9 +160,11 @@ If your command ever ran, also delete `NODONUTS ALERT.txt` from your desktop
 | | Linux | macOS |
 |---|---|---|
 | Program | `~/.local/bin/nodonuts` | `~/.local/bin/nodonuts` |
+| Source | `~/NoDonuts` | `~/NoDonuts` |
 | Settings | `~/.config/nodonuts/config.toml` | `~/Library/Application Support/nodonuts/config.toml` |
 | Enrolled face | `~/.local/share/nodonuts/owner_face.toml` | `~/Library/Application Support/nodonuts/owner_face.toml` |
 | Fallback password (hash only) | `~/.local/share/nodonuts/fallback_checkout.toml` | `~/Library/Application Support/nodonuts/fallback_checkout.toml` |
 | Log | `~/.local/share/nodonuts/nodonuts.log` | `~/Library/Application Support/nodonuts/nodonuts.log` |
 | Login entry (`autostart`) | `~/.config/autostart/nodonuts.desktop` | `~/Library/LaunchAgents/com.amazon.nodonuts.plist` |
 | Alert (`alert_location`), written when your command runs | `~/Desktop/NODONUTS ALERT.txt` | `~/Desktop/NODONUTS ALERT.txt` |
+
