@@ -69,13 +69,15 @@ On both systems, the `PATH` line uses `$HOME` rather than `~` on purpose:
 
 ```bash
 nodonuts enroll
-nodonuts config set command 'loginctl lock-session'    # Linux: lock the screen
-nodonuts config set autostart true                     # optional: start at every login
+nodonuts config set command 'pmset displaysleepnow'        # macOS: lock the screen
+# nodonuts config set autostart true
 nodonuts start
 nodonuts status
 ```
 
-On macOS, use `pmset displaysleepnow` as the command instead.
+> Optional: uncomment the third line to activate autostart at every login.
+
+On Linux, use `systemctl suspend` as the command instead.
 
 Settings can only be changed while NoDonuts is stopped, so set them before
 `nodonuts start`.
