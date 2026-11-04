@@ -3,9 +3,7 @@
 NoDonuts is built from source and installed as a single file,
 `~/.local/bin/nodonuts`. No `sudo` needed.
 
-You need the Brazil CLI (`brazil`), which comes with Amazon Toolbox. (No
-Brazil? See
-[INSTALLATION (No Brazil CLI).md](INSTALLATION%20%28No%20Brazil%20CLI%29.md).)
+You need the Brazil CLI (`brazil`), which comes with Amazon Toolbox.
 Pick your system, copy the commands into a terminal, and press Enter. The
 source goes into a Brazil workspace at `~/NoDonuts`.
 
