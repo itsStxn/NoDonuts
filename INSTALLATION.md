@@ -9,6 +9,8 @@ source goes into a Brazil workspace at `~/NoDonuts`.
 
 ## Linux (Ubuntu)
 
+> The bash commands below will place a NoDonuts folder in ~/, but feel free to change the location of the folder.
+
 ```bash
 cd ~
 brazil ws create --name NoDonuts --versionSet NoDonuts/development
@@ -31,6 +33,8 @@ Install `nodonuts.orig`, not `build/bin/nodonuts`: the latter is a wrapper
 that only works inside Brazil.
 
 ## macOS
+
+> The bash commands below will place a NoDonuts folder in ~/, but feel free to change the location of the folder.
 
 First, install Apple's command line tools (skip if you already have them),
 and wait for the install window to finish:
@@ -74,7 +78,6 @@ The last line prints `nodonuts 0.2.0`.
 nodonuts enroll
 nodonuts config set command 'pmset displaysleepnow'        # macOS: lock the screen
 # nodonuts config set autostart true
-nodonuts start
 nodonuts status
 ```
 
@@ -94,6 +97,8 @@ See [README.md](README.md) for every command and setting.
 
 Linux:
 
+> The bash commands below assume the that NoDonuts folder is in ~/, but feel free to change the location of the folder.
+
 ```bash
 cd ~/NoDonuts/src/NoDonuts
 git pull
@@ -101,10 +106,12 @@ brazil ws sync --metadata
 brazil-build release
 nodonuts stop
 install -m 755 build/bin/nodonuts.orig ~/.local/bin/nodonuts
-nodonuts start
+nodonuts --version
 ```
 
 macOS:
+
+> The bash commands below assume the that NoDonuts folder is in ~/, but feel free to change the location of the folder.
 
 ```bash
 source ~/.cargo/env
@@ -113,7 +120,7 @@ git pull
 cargo build --release
 nodonuts stop
 install -m 755 target/release/nodonuts ~/.local/bin/nodonuts
-nodonuts start
+nodonuts --version
 ```
 
 Your enrolled face and settings are kept.
