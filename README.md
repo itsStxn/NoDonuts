@@ -31,7 +31,7 @@ macOS.
 ```bash
 nodonuts enroll                      # follow the prompts: 4 poses, 10 shots
 nodonuts config set command 'loginctl lock-session'   # Linux example
-nodonuts config set grace_seconds 30
+nodonuts config set grace_seconds 30   # optional: a fixed grace period instead of the OS lock timeout
 nodonuts start                       # watches in the background; asks for a fallback password the first time
 nodonuts status
 nodonuts stop                        # look at the camera (or type the fallback password)
@@ -77,7 +77,7 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
 | `face_checks` | `2` | `nodonuts stop` asks for the fallback password if you're not recognized within this many camera frames (1 to 10). Like `stranger_checks`, it's counted in checks of `check_every_ms`: the default is 2 x 1000 ms, about 2 s |
 | `grace_period` | `true` | `true` = the command runs once you've been away for `grace_seconds`. `false` = being away never runs it and `grace_seconds` does nothing; only stranger mode can, i.e. the command runs only when someone else is at your laptop while you're not (see [Strangers only](#strangers-only-grace_period-false)) |
-| `grace_seconds` | `30` | How long you may be away before the command runs. Ignored when `grace_period` is `false` |
+| `grace_seconds` | `os` | How long you may be away before the command runs: `os` (the default) uses your operating system's own screen-lock timeout (30 s if it can't be read), or give a number of seconds instead (see [Using the OS lock timeout](#using-the-os-lock-timeout-grace_seconds-os)). Ignored when `grace_period` is `false` |
 | `logs_maxdays` | `7` | Empty the watcher's log once it's this many days old. `0` keeps it forever. The running watcher does this, checking at start and about once a minute |
 | `pwd_ms` | `3000` | How long `nodonuts stop` gives you to type the fallback password, in ms (1 to 60000). Too slow counts as a wrong password. **Keep it small, and your password short enough to type in that time** (see [The password time limit](#the-password-time-limit-pwd_ms)) |
 | `stranger_checks` | `2` | Stranger mode fires after this many checks in a row see another face and not yours (1 or more). Counted in checks of `check_every_ms`: the default is 2 x 1000 ms, about 2 s. Called `aggressive_checks` before; old config files still load |
@@ -304,6 +304,36 @@ does nothing.
   leave it on unless this is what you want.
 - `command_once`, the alert, face checkout and sleep/wake handling work the
   same either way.
+
+### Using the OS lock timeout (`grace_seconds os`)
+
+Your operating system already locks the screen after some idle time. By
+default (`grace_seconds = os`), NoDonuts uses that same number as its grace
+period. To use a fixed number instead, set one:
+
+```bash
+nodonuts config set grace_seconds 60      # a fixed 60 s
+nodonuts config set grace_seconds os      # back to the OS timeout (the default)
+nodonuts config get grace_seconds         # prints `os`, and what it comes to
+```
+
+- **Where it's read from.** On Linux with GNOME (Ubuntu's default), it's the
+  screen-blank time plus the lock delay, from the desktop's settings. On a
+  default Ubuntu that's 15 minutes (900 s). On macOS it's the display-sleep
+  time plus the "require password after" delay; that part has not been tried
+  on a real Mac. Other desktops (KDE, ...) aren't supported.
+- **When it's read.** Once, when the watcher starts, so after changing the
+  OS timeout, run `nodonuts stop` and `nodonuts start`. The log says what was
+  chosen.
+- **Fallback: 30 s.** If the OS timeout can't be read (an unsupported
+  desktop, or the OS never locks the screen), NoDonuts uses 30 s and says so
+  in the log. It never ends up with a grace period of 0.
+- **It's not the same clock.** The OS counts time since your last key press
+  or mouse move. NoDonuts counts time since it last saw your face. So `os` is
+  a long window if your OS waits 15 minutes: a stranger who sits down is still
+  caught within seconds by stranger mode, but someone you walk away from isn't
+  until the timer runs out. Pick a number below the OS timeout if you want
+  NoDonuts to act first.
 
 ### How a face is classified
 

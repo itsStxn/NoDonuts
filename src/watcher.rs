@@ -11,6 +11,7 @@ use crate::enroll;
 use crate::face::{self, Embedding, FaceFinder, OnnxFaceFinder};
 use crate::files::{self, Paths};
 use crate::logs;
+use crate::oslock;
 use crate::password;
 use crate::presence::{self, Rules, Sighting, State, Tracker};
 use crate::runner;
@@ -73,7 +74,7 @@ impl Watcher {
             threshold_owner: config.threshold_owner,
             threshold_stranger: config.threshold_stranger,
             rules: Rules::new(
-                config.grace_seconds,
+                config.grace_seconds.seconds(),
                 config.check_every_ms,
                 config.stranger_mode,
                 config.stranger_checks,
@@ -563,7 +564,12 @@ pub const ALREADY_RUNNING_EXIT_CODE: i32 = 3;
 fn watch(paths: &Paths) -> Result<()> {
     // Settings are read once: a running watcher keeps the settings it
     // started with.
-    let config = config::load(&paths.config_file)?;
+    let mut config = config::load(&paths.config_file)?;
+    // `grace_seconds = os`: ask the system now, here in the owner's session
+    // (the desktop settings only exist there), and keep that number.
+    if let Some(decision) = config.resolve_grace(oslock::lock_after_seconds) {
+        log::info!("{decision}");
+    }
     let owner = enroll::load(&paths.face_file)?;
     if owner.len() == 1 {
         // A face enrolled before guided poses: works, but turned heads match
@@ -594,7 +600,7 @@ fn watch(paths: &Paths) -> Result<()> {
         "off".to_string()
     };
     let grace = if config.grace_period {
-        format!("{} s", config.grace_seconds)
+        format!("{} s", config.grace_seconds.seconds())
     } else {
         "off".to_string()
     };
@@ -901,7 +907,7 @@ mod tests {
         };
         let finder = FakeFinder { current: shared };
         let config = Config {
-            grace_seconds,
+            grace_seconds: grace_seconds.into(),
             check_every_ms: 1000,
             stranger_mode,
             // `..` fills the remaining fields from the defaults.
@@ -976,7 +982,7 @@ mod tests {
             current: Rc::new(Cell::new(Empty)),
         };
         let config = Config {
-            grace_seconds: 1,
+            grace_seconds: 1.into(),
             check_every_ms: 1000,
             ..Config::default()
         };
@@ -1031,7 +1037,7 @@ mod tests {
         };
         let config = Config {
             grace_period: false,
-            grace_seconds: 3, // ignored
+            grace_seconds: 3.into(), // ignored
             check_every_ms: 1000,
             stranger_mode,
             ..Config::default()
@@ -1572,7 +1578,7 @@ mod tests {
         let paths = Paths::in_dir(&dir);
         let settings = Config {
             autostart: true,
-            grace_seconds: 45,
+            grace_seconds: 45.into(),
             ..Config::default()
         };
         config::save(&paths.config_file, &settings).unwrap();
@@ -1583,7 +1589,7 @@ mod tests {
 
         let after = config::load(&paths.config_file).unwrap();
         assert!(!after.autostart, "setting off");
-        assert_eq!(after.grace_seconds, 45, "nothing else changed");
+        assert_eq!(after.grace_seconds, 45.into(), "nothing else changed");
         assert!(!autostart::is_enabled(&paths), "login entry removed");
         // Harmless when already off.
         turn_autostart_off(&paths);
@@ -1636,7 +1642,7 @@ mod tests {
             current: Rc::clone(&shared),
         };
         let config = Config {
-            grace_seconds: 30,
+            grace_seconds: 30.into(),
             check_every_ms: 1000,
             stranger_mode: true,
             threshold_stranger: 0.36,

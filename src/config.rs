@@ -26,6 +26,94 @@ pub const KEYS: [&str; 16] = [
     "threshold_stranger",
 ];
 
+/// The grace period used when `grace_seconds` is `os` but the OS timeout
+/// can't be read.
+pub const DEFAULT_GRACE_SECONDS: u64 = 30;
+
+/// The `grace_seconds` setting: a number of seconds, or `os` to use the
+/// operating system's own screen-lock timeout (read when the watcher
+/// starts).
+///
+/// In the TOML file it is either a number (`grace_seconds = 30`) or the text
+/// `"os"`. `serde` goes through [`StoredGrace`] to allow both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "StoredGrace", into = "StoredGrace")]
+pub enum GraceSeconds {
+    /// A fixed number of seconds, greater than 0.
+    Seconds(u64),
+    /// Whatever the OS waits before locking the screen.
+    Os,
+}
+
+/// What `grace_seconds` looks like in the file: a number or some text.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum StoredGrace {
+    Number(u64),
+    Word(String),
+}
+
+impl From<GraceSeconds> for StoredGrace {
+    fn from(grace: GraceSeconds) -> StoredGrace {
+        match grace {
+            GraceSeconds::Seconds(seconds) => StoredGrace::Number(seconds),
+            GraceSeconds::Os => StoredGrace::Word("os".to_string()),
+        }
+    }
+}
+
+impl TryFrom<StoredGrace> for GraceSeconds {
+    type Error = String;
+
+    fn try_from(stored: StoredGrace) -> std::result::Result<GraceSeconds, String> {
+        match stored {
+            StoredGrace::Number(seconds) => Ok(GraceSeconds::Seconds(seconds)),
+            StoredGrace::Word(word) if word == "os" => Ok(GraceSeconds::Os),
+            StoredGrace::Word(_) => Err(GRACE_HELP.to_string()),
+        }
+    }
+}
+
+const GRACE_HELP: &str = "grace_seconds must be a whole number greater than 0, or `os`";
+
+impl From<u64> for GraceSeconds {
+    fn from(seconds: u64) -> GraceSeconds {
+        GraceSeconds::Seconds(seconds)
+    }
+}
+
+impl GraceSeconds {
+    /// Parses a `config set` value: a whole number above 0, or `os`.
+    pub fn parse(value: &str) -> Result<GraceSeconds> {
+        let value = value.trim();
+        if value == "os" {
+            return Ok(GraceSeconds::Os);
+        }
+        match value.parse::<u64>() {
+            Ok(seconds) if seconds > 0 => Ok(GraceSeconds::Seconds(seconds)),
+            _ => bail!(GRACE_HELP),
+        }
+    }
+
+    /// The number of seconds to use. `Os` has to be turned into a number
+    /// first (see `Config::resolve_grace`); until then it counts as the
+    /// default, so a missed step can't mean a grace period of 0.
+    pub fn seconds(self) -> u64 {
+        match self {
+            GraceSeconds::Seconds(seconds) => seconds,
+            GraceSeconds::Os => DEFAULT_GRACE_SECONDS,
+        }
+    }
+
+    /// How it's written: `30` or `os`.
+    fn text(self) -> String {
+        match self {
+            GraceSeconds::Seconds(seconds) => seconds.to_string(),
+            GraceSeconds::Os => "os".to_string(),
+        }
+    }
+}
+
 /// All settings. `Serialize`/`Deserialize` let `serde` convert this struct
 /// to and from TOML text for us.
 ///
@@ -69,8 +157,9 @@ pub struct Config {
     /// laptop while the owner isn't) can run the command.
     pub grace_period: bool,
     /// How long the owner may be away before the command runs (when
-    /// `grace_period` is on).
-    pub grace_seconds: u64,
+    /// `grace_period` is on): a number of seconds, or `os` for the operating
+    /// system's own screen-lock timeout.
+    pub grace_seconds: GraceSeconds,
     /// Empty the watcher's log once it's this many days old. 0 = never.
     pub logs_maxdays: u64,
     /// How long `nodonuts stop` gives to type the fallback password, in
@@ -121,7 +210,9 @@ impl Default for Config {
             face_checks: 2,
             // On: the tool has always run the command after an absence.
             grace_period: true,
-            grace_seconds: 30,
+            // Follow the OS's own screen-lock timeout (read when the
+            // watcher starts); 30 s if it can't be read.
+            grace_seconds: GraceSeconds::Os,
             logs_maxdays: 7,
             // Enough for a short password typed from memory.
             pwd_ms: 3000,
@@ -142,8 +233,8 @@ impl Default for Config {
 impl Config {
     /// Checks every setting is usable.
     pub fn validate(&self) -> Result<()> {
-        if self.grace_seconds == 0 {
-            bail!("grace_seconds must be a whole number greater than 0");
+        if self.grace_seconds == GraceSeconds::Seconds(0) {
+            bail!(GRACE_HELP);
         }
         if self.command.trim().is_empty() {
             bail!("command must not be empty");
@@ -195,7 +286,7 @@ impl Config {
     pub fn get(&self, key: &str) -> Result<String> {
         let value = match key {
             "grace_period" => self.grace_period.to_string(),
-            "grace_seconds" => self.grace_seconds.to_string(),
+            "grace_seconds" => self.grace_seconds.text(),
             "command" => self.command.clone(),
             "command_once" => self.command_once.to_string(),
             "threshold_owner" => self.threshold_owner.to_string(),
@@ -222,7 +313,7 @@ impl Config {
         let mut updated = self.clone();
         match key {
             "grace_period" => updated.grace_period = parse_on_off(key, value)?,
-            "grace_seconds" => updated.grace_seconds = parse_whole_number(key, value)?,
+            "grace_seconds" => updated.grace_seconds = GraceSeconds::parse(value)?,
             "command" => updated.command = value.to_string(),
             "command_once" => updated.command_once = parse_on_off(key, value)?,
             "threshold_owner" => updated.threshold_owner = parse_fraction(key, value)?,
@@ -284,6 +375,29 @@ impl Config {
         } else {
             None
         }
+    }
+
+    /// Turns `grace_seconds = os` into a number, using `os_lock`, which says
+    /// what the OS waits before locking (`None` if it can't tell). If the OS
+    /// timeout can't be read, the default is used. Returns a sentence about
+    /// what was decided, or `None` if `grace_seconds` was already a number.
+    pub fn resolve_grace(&mut self, os_lock: impl FnOnce() -> Option<u64>) -> Option<String> {
+        if self.grace_seconds != GraceSeconds::Os {
+            return None;
+        }
+        Some(match os_lock() {
+            Some(seconds) if seconds > 0 => {
+                self.grace_seconds = GraceSeconds::Seconds(seconds);
+                format!("grace_seconds = os: the OS locks the screen after {seconds} s, using that")
+            }
+            _ => {
+                self.grace_seconds = GraceSeconds::Seconds(DEFAULT_GRACE_SECONDS);
+                format!(
+                    "grace_seconds = os, but the OS lock timeout can't be read (or the OS \
+                     never locks), using {DEFAULT_GRACE_SECONDS} s"
+                )
+            }
+        })
     }
 
     /// Parses TOML text and validates it.
@@ -514,8 +628,11 @@ mod tests {
     #[test]
     fn missing_keys_use_defaults() {
         let config = Config::from_toml("grace_seconds = 10").unwrap();
-        assert_eq!(config.grace_seconds, 10);
+        assert_eq!(config.grace_seconds, GraceSeconds::Seconds(10));
         assert_eq!(config.command, Config::default().command);
+        // A file without `grace_seconds` follows the OS timeout.
+        let config_without = Config::from_toml("command = 'true'").unwrap();
+        assert_eq!(config_without.grace_seconds, GraceSeconds::Os);
         // Stranger mode is the tool's main job: on unless switched off.
         assert!(config.stranger_mode);
         assert!(!config.autostart);
@@ -547,6 +664,81 @@ mod tests {
         // Grace period back on: valid again ("away only", the old default).
         config.set("grace_period", "true").unwrap();
         assert!(config.warning().is_none());
+    }
+
+    #[test]
+    fn grace_seconds_can_be_a_number_or_os() {
+        let mut config = Config::default();
+        // `os` is the default.
+        assert_eq!(config.grace_seconds, GraceSeconds::Os);
+        assert_eq!(config.get("grace_seconds").unwrap(), "os");
+        config.set("grace_seconds", "30").unwrap();
+        assert_eq!(config.get("grace_seconds").unwrap(), "30");
+        config.set("grace_seconds", "os").unwrap();
+        assert_eq!(config.grace_seconds, GraceSeconds::Os);
+        config.set("grace_seconds", " 45 ").unwrap();
+        assert_eq!(config.grace_seconds, GraceSeconds::Seconds(45));
+        // Only the exact word, and a failed set changes nothing.
+        for bad in ["OS", "Os", "operating-system", "0", "-5", "1.5", ""] {
+            assert!(config.set("grace_seconds", bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(config.grace_seconds, GraceSeconds::Seconds(45));
+    }
+
+    #[test]
+    fn grace_seconds_reads_and_writes_both_forms_in_the_file() {
+        // Old files have a plain number and keep loading.
+        let config = Config::from_toml("grace_seconds = 12").unwrap();
+        assert_eq!(config.grace_seconds, GraceSeconds::Seconds(12));
+        assert!(config.to_toml().unwrap().contains("grace_seconds = 12\n"));
+        // `os` is written as text, and reads back.
+        let config = Config::from_toml("grace_seconds = \"os\"").unwrap();
+        assert_eq!(config.grace_seconds, GraceSeconds::Os);
+        let text = config.to_toml().unwrap();
+        assert!(text.contains("grace_seconds = \"os\""), "{text}");
+        assert_eq!(Config::from_toml(&text).unwrap(), config);
+        // Anything else doesn't load.
+        for bad in ["\"soon\"", "\"OS\"", "0", "-3", "1.5", "true"] {
+            let text = format!("grace_seconds = {bad}");
+            assert!(Config::from_toml(&text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn os_grace_becomes_the_os_timeout() {
+        let mut config = Config {
+            grace_seconds: GraceSeconds::Os,
+            ..Config::default()
+        };
+        let decision = config.resolve_grace(|| Some(900)).unwrap();
+        assert_eq!(config.grace_seconds, GraceSeconds::Seconds(900));
+        assert!(decision.contains("900 s"), "{decision}");
+    }
+
+    #[test]
+    fn os_grace_falls_back_when_the_os_timeout_is_unknown() {
+        for unreadable in [None, Some(0)] {
+            let mut config = Config {
+                grace_seconds: GraceSeconds::Os,
+                ..Config::default()
+            };
+            let decision = config.resolve_grace(|| unreadable).unwrap();
+            assert_eq!(config.grace_seconds, GraceSeconds::Seconds(30));
+            assert!(decision.contains("30 s"), "{decision}");
+        }
+    }
+
+    #[test]
+    fn a_number_is_never_replaced_by_the_os_timeout() {
+        let mut config = Config {
+            grace_seconds: GraceSeconds::Seconds(30),
+            ..Config::default()
+        };
+        let decision = config.resolve_grace(|| panic!("must not ask the OS"));
+        assert_eq!(decision, None);
+        assert_eq!(config.grace_seconds, GraceSeconds::Seconds(30));
+        // Until it's resolved, `os` counts as the default, never as 0.
+        assert_eq!(GraceSeconds::Os.seconds(), 30);
     }
 
     #[test]
@@ -603,7 +795,10 @@ mod tests {
         let mut config = Config::default();
         config.set("grace_seconds", "99").unwrap();
         save(&path, &config).unwrap();
-        assert_eq!(load(&path).unwrap().grace_seconds, 99);
+        assert_eq!(
+            load(&path).unwrap().grace_seconds,
+            GraceSeconds::Seconds(99)
+        );
 
         // Reset = save the defaults.
         save(&path, &Config::default()).unwrap();
