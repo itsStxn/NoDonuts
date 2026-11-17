@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
-pub const KEYS: [&str; 16] = [
+pub const KEYS: [&str; 17] = [
     "alert_location",
+    "alerts",
     "autostart",
     "camera",
     "check_every_ms",
@@ -114,6 +115,39 @@ impl GraceSeconds {
     }
 }
 
+/// What the owner can choose to get an alert for (`nodonuts alerts`).
+/// In the file: `alerts = ["grace_period", "stranger"]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertOn {
+    /// The command ran because the owner was away for the grace period.
+    GracePeriod,
+    /// The command ran because someone else was at the laptop (stranger
+    /// mode).
+    Stranger,
+}
+
+impl AlertOn {
+    /// Every choice, in the order the menu shows them.
+    pub const ALL: [AlertOn; 2] = [AlertOn::GracePeriod, AlertOn::Stranger];
+
+    /// The line shown in the `nodonuts alerts` menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            AlertOn::GracePeriod => "Grace period: you were away for too long",
+            AlertOn::Stranger => "Stranger detected: someone else is at the laptop",
+        }
+    }
+
+    /// A few words, for messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            AlertOn::GracePeriod => "grace period",
+            AlertOn::Stranger => "stranger detected",
+        }
+    }
+}
+
 /// All settings. `Serialize`/`Deserialize` let `serde` convert this struct
 /// to and from TOML text for us.
 ///
@@ -128,6 +162,12 @@ pub struct Config {
     /// Where `NODONUTS ALERT.txt` goes when the command runs: `desktop`,
     /// `off` (no alert, no notification), or a folder (`/...` or `~/...`).
     pub alert_location: String,
+    /// Which runs of the command raise the alert (the file, the desktop
+    /// notification and the `status` line): the grace period, a stranger,
+    /// both, or neither. Chosen with `nodonuts alerts`, not
+    /// `config set`. A refused `nodonuts stop` or a stop signal while away
+    /// always alerts: someone tried to stop the watcher.
+    pub alerts: Vec<AlertOn>,
     /// If true, the watcher starts by itself when the owner logs in.
     pub autostart: bool,
     /// Which camera to use: `built-in` (the laptop's own), or a camera's
@@ -195,6 +235,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             alert_location: alert::DESKTOP.to_string(),
+            // Both: you learn about every run of the command.
+            alerts: AlertOn::ALL.to_vec(),
             autostart: false,
             camera: "built-in".to_string(),
             // Each check costs ~100 ms of CPU (the face models): every
@@ -300,6 +342,7 @@ impl Config {
             "face_checkout" => self.face_checkout.to_string(),
             "face_checks" => self.face_checks.to_string(),
             "logs_maxdays" => self.logs_maxdays.to_string(),
+            "alerts" => self.alerts_text(),
             "pwd_ms" => self.pwd_ms.to_string(),
             _ => bail!(unknown_key(key)),
         };
@@ -335,6 +378,10 @@ impl Config {
             // Chosen from a list of the cameras actually connected, so
             // a typo'd name can't slip in.
             "camera" => bail!("choose the camera with `nodonuts camera`"),
+            // Picked in an interactive view, like the camera.
+            "alerts" => {
+                bail!("choose what to get an alert for with `nodonuts alerts`")
+            }
             "face_checkout" => updated.face_checkout = parse_on_off(key, value)?,
             "pwd_ms" => {
                 updated.pwd_ms = value
@@ -358,6 +405,31 @@ impl Config {
         updated.validate()?;
         *self = updated;
         Ok(())
+    }
+
+    /// The `alerts` setting as text: `grace period, stranger
+    /// detected`, or `none`.
+    pub fn alerts_text(&self) -> String {
+        if self.alerts.is_empty() {
+            return "none".to_string();
+        }
+        let names: Vec<&str> = AlertOn::ALL
+            .iter()
+            .filter(|kind| self.alerts.contains(kind))
+            .map(|kind| kind.name())
+            .collect();
+        names.join(", ")
+    }
+
+    /// Should this run of the command raise the alert? Only the grace
+    /// period and stranger runs can be switched off; a refused `stop` and a
+    /// stop signal always alert.
+    pub fn wants_alert(&self, reason: alert::Reason) -> bool {
+        match reason {
+            alert::Reason::GracePeriod { .. } => self.alerts.contains(&AlertOn::GracePeriod),
+            alert::Reason::Stranger { .. } => self.alerts.contains(&AlertOn::Stranger),
+            alert::Reason::StopRefused | alert::Reason::StopSignal => true,
+        }
     }
 
     /// A warning when these settings mean the command can never run on its
@@ -664,6 +736,81 @@ mod tests {
         // Grace period back on: valid again ("away only", the old default).
         config.set("grace_period", "true").unwrap();
         assert!(config.warning().is_none());
+    }
+
+    #[test]
+    fn alerts_default_to_both_and_are_not_set_by_hand() {
+        let mut config = Config::default();
+        assert_eq!(config.alerts, [AlertOn::GracePeriod, AlertOn::Stranger]);
+        assert_eq!(
+            config.get("alerts").unwrap(),
+            "grace period, stranger detected"
+        );
+        // Only `nodonuts alerts` chooses them.
+        assert!(config.set("alerts", "none").is_err());
+        assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn alerts_round_trip_through_the_file() {
+        let mut config = Config::default();
+        for chosen in [
+            vec![AlertOn::Stranger],
+            vec![AlertOn::GracePeriod],
+            vec![],
+            AlertOn::ALL.to_vec(),
+        ] {
+            config.alerts = chosen.clone();
+            let text = config.to_toml().unwrap();
+            assert_eq!(Config::from_toml(&text).unwrap().alerts, chosen, "{text}");
+        }
+        config.alerts = vec![AlertOn::Stranger];
+        assert!(
+            config
+                .to_toml()
+                .unwrap()
+                .contains("alerts = [\"stranger\"]")
+        );
+        // Spelled out by hand, and an old file without the key.
+        let config = Config::from_toml("alerts = [\"grace_period\"]").unwrap();
+        assert_eq!(config.alerts, [AlertOn::GracePeriod]);
+        assert_eq!(Config::from_toml("").unwrap().alerts, AlertOn::ALL);
+        assert!(Config::from_toml("alerts = [\"everything\"]").is_err());
+        assert!(Config::from_toml("alerts = \"stranger\"").is_err());
+    }
+
+    #[test]
+    fn alerts_read_naturally() {
+        let mut config = Config {
+            alerts: vec![AlertOn::Stranger],
+            ..Config::default()
+        };
+        assert_eq!(config.alerts_text(), "stranger detected");
+        config.alerts = vec![AlertOn::Stranger, AlertOn::GracePeriod];
+        assert_eq!(config.alerts_text(), "grace period, stranger detected");
+        config.alerts = vec![];
+        assert_eq!(config.alerts_text(), "none");
+    }
+
+    #[test]
+    fn only_the_chosen_runs_raise_the_alert() {
+        use alert::Reason;
+        let grace = Reason::GracePeriod { seconds: 30 };
+        let stranger = Reason::Stranger { checks: 2 };
+        let mut config = Config::default();
+        assert!(config.wants_alert(grace) && config.wants_alert(stranger));
+        config.alerts = vec![AlertOn::Stranger];
+        assert!(!config.wants_alert(grace));
+        assert!(config.wants_alert(stranger));
+        config.alerts = vec![AlertOn::GracePeriod];
+        assert!(config.wants_alert(grace));
+        assert!(!config.wants_alert(stranger));
+        // Neither: the two automatic runs are quiet...
+        config.alerts = vec![];
+        assert!(!config.wants_alert(grace) && !config.wants_alert(stranger));
+        // ...but someone trying to stop the watcher always raises it.
+        assert!(config.wants_alert(Reason::StopRefused));
+        assert!(config.wants_alert(Reason::StopSignal));
     }
 
     #[test]

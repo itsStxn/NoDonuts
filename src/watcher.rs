@@ -447,10 +447,16 @@ fn stop_signals() -> Vec<i32> {
 /// Everything that must happen *before* the command runs, because a
 /// command like `reboot` or a logout may end this process before it could
 /// do it afterwards: with `command_once`, turn autostart off; then raise
-/// the alert (file + notification) so the owner learns the command ran.
+/// the alert (file + notification) so the owner learns the command ran, if
+/// they asked to be told about this kind of run.
 fn before_command(paths: &Paths, config: &Config, reason: alert::Reason) {
     if config.command_once {
         turn_autostart_off(paths);
+    }
+    // `nodonuts alerts` can switch the alert off for some runs.
+    if !config.wants_alert(reason) {
+        log::info!("no alert for this run (switched off with `nodonuts alerts`)");
+        return;
     }
     alert::raise(
         paths,
@@ -1081,6 +1087,26 @@ mod tests {
         };
         assert!(describe(away, true).contains("grace period started"));
         assert!(describe(away, false).contains("grace period is off"));
+    }
+
+    #[test]
+    fn a_run_you_didnt_ask_to_hear_about_leaves_no_alert() {
+        let dir = std::env::temp_dir().join(format!("nodonuts-quiet-{}", std::process::id()));
+        let alerts = dir.join("alerts");
+        std::fs::create_dir_all(&alerts).unwrap();
+        let paths = Paths::in_dir(&dir);
+        let config = Config {
+            alert_location: alerts.to_str().unwrap().to_string(),
+            command_once: false,
+            alerts: vec![config::AlertOn::Stranger],
+            ..Config::default()
+        };
+        // Grace-period runs are switched off: nothing is written (and no
+        // desktop notification is shown).
+        before_command(&paths, &config, alert::Reason::GracePeriod { seconds: 30 });
+        assert!(!alerts.join(alert::FILE_NAME).exists());
+        assert!(alert::last(&paths).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

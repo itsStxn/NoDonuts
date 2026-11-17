@@ -2,8 +2,9 @@
 //! module that does the work.
 
 use amzn_no_donuts::cli::{Cli, Command, ConfigAction};
-use amzn_no_donuts::config::{self, Config};
+use amzn_no_donuts::config::{self, AlertOn, Config};
 use amzn_no_donuts::files::Paths;
+use amzn_no_donuts::menu::{self, Menu};
 use amzn_no_donuts::{autostart, camera, daemon, enroll, oslock, password, prompt, watcher};
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -24,6 +25,7 @@ fn main() -> Result<()> {
         Command::Refresh => refresh(&paths),
         Command::Password { remove } => set_password(&paths, remove),
         Command::Camera => choose_camera(&paths),
+        Command::Alerts => choose_alerts(&paths),
         Command::Watch => watcher::run(&paths),
         Command::Config { action } => run_config(&paths, action),
     }
@@ -184,6 +186,55 @@ fn choose_camera(paths: &Paths) -> Result<()> {
             "Tip: re-enroll with this camera (`nodonuts enroll`); a different lens and angle \
              can make your face harder to recognize."
         );
+    }
+    Ok(())
+}
+
+/// `nodonuts alerts`: tick which runs of the command raise the alert (the
+/// file, the desktop notification and the `status` line).
+fn choose_alerts(paths: &Paths) -> Result<()> {
+    refuse_while_running(paths, "alerts")?;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        bail!("`nodonuts alerts` is interactive: run it in a terminal");
+    }
+    let mut config = config::load(&paths.config_file)?;
+
+    // One line per choice, ticked if it is on now.
+    let items: Vec<(&str, bool)> = AlertOn::ALL
+        .iter()
+        .map(|kind| (kind.label(), config.alerts.contains(kind)))
+        .collect();
+    let mut menu = Menu::new(&items);
+    let header = [
+        "AlertOn me when my command runs because of:",
+        "(Up/Down or 1-2 to move, Space to tick, Enter to save, q to cancel)",
+        "",
+    ];
+    if !menu::run(&header, &mut menu)? {
+        println!("Alerts unchanged.");
+        return Ok(());
+    }
+
+    let chosen: Vec<AlertOn> = AlertOn::ALL
+        .iter()
+        .zip(menu.checked())
+        .filter(|(_, ticked)| **ticked)
+        .map(|(kind, _)| *kind)
+        .collect();
+    if chosen == config.alerts {
+        println!("Alerts unchanged: {}", config.alerts_text());
+        return Ok(());
+    }
+    config.alerts = chosen;
+    config::save(&paths.config_file, &config)?;
+    println!("Alerts: {}", config.alerts_text());
+    if config.alerts.is_empty() {
+        println!(
+            "Your command still runs; you just won't be told, except when someone tries to stop NoDonuts."
+        );
+    }
+    if config.alert_location == "off" {
+        println!("Note: alert_location is `off`, so nothing is shown whatever you choose here.");
     }
     Ok(())
 }
