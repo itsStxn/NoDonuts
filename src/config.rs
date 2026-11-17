@@ -8,8 +8,6 @@ use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
 pub const KEYS: [&str; 16] = [
-    "aggressive_checks",
-    "aggressive_mode",
     "alert_location",
     "autostart",
     "camera",
@@ -22,6 +20,8 @@ pub const KEYS: [&str; 16] = [
     "grace_seconds",
     "logs_maxdays",
     "pwd_ms",
+    "stranger_checks",
+    "stranger_mode",
     "threshold_owner",
     "threshold_stranger",
 ];
@@ -37,13 +37,6 @@ pub const KEYS: [&str; 16] = [
 // `deny_unknown_fields`: a typo like `grace_second` is an error, not ignored.
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Aggressive mode fires only after this many checks in a row see a
-    /// stranger and not the owner. One check every `check_every_ms`, so the
-    /// wait is `aggressive_checks x check_every_ms`. At least 1.
-    pub aggressive_checks: u64,
-    /// If true, run the command immediately (no grace period) when someone
-    /// other than the owner is in front of the camera and the owner is not.
-    pub aggressive_mode: bool,
     /// Where `NODONUTS ALERT.txt` goes when the command runs: `desktop`,
     /// `off` (no alert, no notification), or a folder (`/...` or `~/...`).
     pub alert_location: String,
@@ -67,12 +60,12 @@ pub struct Config {
     pub face_checkout: bool,
     /// `nodonuts stop` asks for the fallback password if the owner isn't
     /// recognized within this many camera frames. One frame every
-    /// `check_every_ms`, like `aggressive_checks`, so the wait is up to
+    /// `check_every_ms`, like `stranger_checks`, so the wait is up to
     /// `face_checks x check_every_ms`. 1 to 10.
     pub face_checks: u64,
     /// If true, the command runs once the owner has been away for
     /// `grace_seconds`. If false, being away never runs it and
-    /// `grace_seconds` does nothing: only aggressive mode (a stranger at the
+    /// `grace_seconds` does nothing: only stranger mode (a stranger at the
     /// laptop while the owner isn't) can run the command.
     pub grace_period: bool,
     /// How long the owner may be away before the command runs (when
@@ -85,13 +78,25 @@ pub struct Config {
     /// it isn't checking the camera, so a long wait is free time for
     /// someone at the laptop. 1 to 60000.
     pub pwd_ms: u64,
+    /// Stranger mode fires only after this many checks in a row see a
+    /// stranger and not the owner. One check every `check_every_ms`, so the
+    /// wait is `stranger_checks x check_every_ms`. At least 1.
+    /// `alias`: config files from before the rename used `aggressive_checks`.
+    #[serde(alias = "aggressive_checks")]
+    pub stranger_checks: u64,
+    /// If true, run the command immediately (no grace period) when someone
+    /// other than the owner is in front of the camera and the owner is not.
+    /// This is the tool's main job, so it is on by default.
+    /// `alias`: config files from before the rename used `aggressive_mode`.
+    #[serde(alias = "aggressive_mode")]
+    pub stranger_mode: bool,
     /// Minimum similarity (0 to 1) for a face to count as the owner.
     /// `alias`: config files saved before the rename used `match_threshold`;
     /// they still load, and are saved with the new name.
     #[serde(alias = "match_threshold")]
     pub threshold_owner: f64,
     /// A face below this similarity (0 to 1) counts as a stranger, for
-    /// aggressive mode. Between this and `threshold_owner` a face is
+    /// stranger mode. Between this and `threshold_owner` a face is
     /// "unsure": not the owner, but not a stranger either. At most
     /// `threshold_owner`; setting them equal removes the unsure zone.
     pub threshold_stranger: f64,
@@ -100,9 +105,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            // 2 = one misread frame of the owner is not enough to fire.
-            aggressive_checks: 2,
-            aggressive_mode: false,
             alert_location: alert::DESKTOP.to_string(),
             autostart: false,
             camera: "built-in".to_string(),
@@ -123,6 +125,11 @@ impl Default for Config {
             logs_maxdays: 7,
             // Enough for a short password typed from memory.
             pwd_ms: 3000,
+            // 2 = one misread frame of the owner is not enough to fire.
+            stranger_checks: 2,
+            // On: protecting the laptop from someone else using it is the
+            // tool's main job.
+            stranger_mode: true,
             // SFace's recommended threshold for cosine similarity.
             threshold_owner: 0.36,
             // Well below the owner's: a turned or badly lit owner usually
@@ -162,8 +169,8 @@ impl Config {
         if self.check_every_ms == 0 {
             bail!("check_every_ms must be a whole number greater than 0");
         }
-        if self.aggressive_checks == 0 {
-            bail!("aggressive_checks must be a whole number of 1 or more");
+        if self.stranger_checks == 0 {
+            bail!("stranger_checks must be a whole number of 1 or more");
         }
         // Capped so `nodonuts stop` stays quick (one frame per check_every_ms).
         if !(1..=10).contains(&self.face_checks) {
@@ -194,8 +201,8 @@ impl Config {
             "threshold_owner" => self.threshold_owner.to_string(),
             "threshold_stranger" => self.threshold_stranger.to_string(),
             "check_every_ms" => self.check_every_ms.to_string(),
-            "aggressive_mode" => self.aggressive_mode.to_string(),
-            "aggressive_checks" => self.aggressive_checks.to_string(),
+            "stranger_mode" => self.stranger_mode.to_string(),
+            "stranger_checks" => self.stranger_checks.to_string(),
             "alert_location" => self.alert_location.clone(),
             "autostart" => self.autostart.to_string(),
             "camera" => self.camera.clone(),
@@ -221,9 +228,9 @@ impl Config {
             "threshold_owner" => updated.threshold_owner = parse_fraction(key, value)?,
             "threshold_stranger" => updated.threshold_stranger = parse_fraction(key, value)?,
             "check_every_ms" => updated.check_every_ms = parse_whole_number(key, value)?,
-            "aggressive_mode" => updated.aggressive_mode = parse_on_off(key, value)?,
-            "aggressive_checks" => {
-                updated.aggressive_checks = value
+            "stranger_mode" => updated.stranger_mode = parse_on_off(key, value)?,
+            "stranger_checks" => {
+                updated.stranger_checks = value
                     .trim()
                     .parse()
                     .with_context(|| format!("{key} must be a whole number of 1 or more"))?
@@ -263,14 +270,14 @@ impl Config {
     }
 
     /// A warning when these settings mean the command can never run on its
-    /// own: with both the grace period and aggressive mode off, nothing
+    /// own: with both the grace period and stranger mode off, nothing
     /// ever fires (only a refused `nodonuts stop` still does). Allowed,
     /// since setting the two one at a time passes through it, but worth a
     /// loud note.
     pub fn warning(&self) -> Option<&'static str> {
-        if !self.grace_period && !self.aggressive_mode {
+        if !self.grace_period && !self.stranger_mode {
             Some(
-                "grace_period and aggressive_mode are both off: your command will never \
+                "grace_period and stranger_mode are both off: your command will never \
                  run when you leave or when someone else sits down (only a refused \
                  `nodonuts stop` runs it). Turn one of them on.",
             )
@@ -362,14 +369,14 @@ mod tests {
         config.set("threshold_owner", "0.5").unwrap();
         config.set("threshold_stranger", "0.3").unwrap();
         config.set("check_every_ms", "250").unwrap();
-        config.set("aggressive_mode", "true").unwrap();
-        assert_eq!(config.get("aggressive_mode").unwrap(), "true");
-        config.set("aggressive_mode", "false").unwrap();
-        assert_eq!(config.get("aggressive_mode").unwrap(), "false");
-        config.set("aggressive_checks", "1").unwrap();
-        assert_eq!(config.get("aggressive_checks").unwrap(), "1");
-        config.set("aggressive_checks", "10").unwrap();
-        assert_eq!(config.get("aggressive_checks").unwrap(), "10");
+        config.set("stranger_mode", "true").unwrap();
+        assert_eq!(config.get("stranger_mode").unwrap(), "true");
+        config.set("stranger_mode", "false").unwrap();
+        assert_eq!(config.get("stranger_mode").unwrap(), "false");
+        config.set("stranger_checks", "1").unwrap();
+        assert_eq!(config.get("stranger_checks").unwrap(), "1");
+        config.set("stranger_checks", "10").unwrap();
+        assert_eq!(config.get("stranger_checks").unwrap(), "10");
         config.set("logs_maxdays", "0").unwrap();
         config.set("logs_maxdays", "30").unwrap();
         assert_eq!(config.get("logs_maxdays").unwrap(), "30");
@@ -467,9 +474,9 @@ mod tests {
             ("threshold_stranger", "0.9"),
             ("check_every_ms", "0"),
             ("command", "   "),
-            ("aggressive_mode", "yes"),
-            ("aggressive_mode", "1"),
-            ("aggressive_mode", ""),
+            ("stranger_mode", "yes"),
+            ("stranger_mode", "1"),
+            ("stranger_mode", ""),
             ("autostart", "on"),
             ("face_checkout", "yes"),
             ("command_once", "1"),
@@ -486,10 +493,10 @@ mod tests {
             ("pwd_ms", "60001"),
             ("pwd_ms", "1.5"),
             ("pwd_ms", "-1"),
-            ("aggressive_checks", "0"),
-            ("aggressive_checks", "-1"),
-            ("aggressive_checks", "1.5"),
-            ("aggressive_checks", "two"),
+            ("stranger_checks", "0"),
+            ("stranger_checks", "-1"),
+            ("stranger_checks", "1.5"),
+            ("stranger_checks", "two"),
         ] {
             assert!(config.set(key, bad).is_err(), "{key}={bad} should fail");
         }
@@ -509,13 +516,13 @@ mod tests {
         let config = Config::from_toml("grace_seconds = 10").unwrap();
         assert_eq!(config.grace_seconds, 10);
         assert_eq!(config.command, Config::default().command);
-        // Configs written before aggressive_mode existed keep it off.
-        assert!(!config.aggressive_mode);
+        // Stranger mode is the tool's main job: on unless switched off.
+        assert!(config.stranger_mode);
         assert!(!config.autostart);
         // ...but face_checkout is on, including for older configs.
         assert!(config.face_checkout);
         assert!(config.command_once);
-        assert_eq!(config.aggressive_checks, 2);
+        assert_eq!(config.stranger_checks, 2);
         assert_eq!(config.pwd_ms, 3000);
         // Older files keep behaving as before: the grace period is on.
         assert!(config.grace_period);
@@ -530,13 +537,35 @@ mod tests {
     #[test]
     fn both_detectors_off_is_allowed_but_warned_about() {
         let mut config = Config::default();
-        assert!(config.warning().is_none(), "defaults: grace on");
-        // Turning the grace period off alone leaves nothing that can fire.
+        assert!(config.warning().is_none(), "defaults: both on");
+        // Strangers only: grace off, stranger mode on (the default) is fine.
         config.set("grace_period", "false").unwrap();
-        assert!(config.warning().is_some());
-        // Aggressive mode on again makes it a valid "strangers only" setup.
-        config.set("aggressive_mode", "true").unwrap();
         assert!(config.warning().is_none());
+        // Stranger mode off as well leaves nothing that can fire.
+        config.set("stranger_mode", "false").unwrap();
+        assert!(config.warning().is_some());
+        // Grace period back on: valid again ("away only", the old default).
+        config.set("grace_period", "true").unwrap();
+        assert!(config.warning().is_none());
+    }
+
+    #[test]
+    fn old_aggressive_names_still_load() {
+        let config =
+            Config::from_toml("aggressive_mode = false\naggressive_checks = 4\ngrace_seconds = 10")
+                .unwrap();
+        assert!(!config.stranger_mode);
+        assert_eq!(config.stranger_checks, 4);
+        // Saved with the new names from now on.
+        let text = config.to_toml().unwrap();
+        assert!(text.contains("stranger_mode = false"));
+        assert!(text.contains("stranger_checks = 4"));
+        assert!(!text.contains("aggressive"));
+        // But the old names aren't `config set` keys any more.
+        let mut config = Config::default();
+        assert!(config.set("aggressive_mode", "true").is_err());
+        assert!(config.set("aggressive_checks", "3").is_err());
+        assert!(config.get("aggressive_mode").is_err());
     }
 
     #[test]

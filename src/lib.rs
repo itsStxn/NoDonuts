@@ -16,7 +16,7 @@
 //!     -> similarity vs the owner's embedding
 //!          >= threshold_owner   : owner
 //!          <  threshold_stranger: stranger   (in between: unsure)
-//!     -> presence state machine (grace period, aggressive mode, wake)
+//!     -> presence state machine (grace period, stranger mode, wake)
 //!     -> fire? raise the alert (file + notification), release the camera,
 //!        run the command, wait for it
 //!     every ~60 s: empty the log if older than logs_maxdays
