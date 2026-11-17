@@ -43,6 +43,7 @@ pub mod enroll;
 pub mod face;
 pub mod files;
 pub mod logs;
+pub mod menu;
 pub mod oslock;
 pub mod password;
 pub mod presence;

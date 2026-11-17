@@ -49,6 +49,7 @@ macOS lock example: `pmset displaysleepnow`.
 | `nodonuts stop` | Stops it (with `face_checkout` on, it needs your face, or the fallback password) |
 | `nodonuts status` | Shows whether it is running (and its PID), the last alert if its file is still there, whether it starts at login, and whether a fallback password is set |
 | `nodonuts camera` | Lists the usable cameras and lets you choose one (see [Choosing a camera](#choosing-a-camera)). Only while the watcher is stopped |
+| `nodonuts alerts` | Opens a small view to choose what you get an alert for when your command runs: the grace period, a stranger, or both (see [The alert](#the-alert-alert_location)). Only while the watcher is stopped |
 | `nodonuts password` | Sets or changes the fallback password (`--remove` to delete it). Only while the watcher is stopped |
 | `nodonuts refresh` | Updates the login entry to match `autostart`, pointing at the copy you run it from. Only while the watcher is stopped |
 | `nodonuts config show` | Prints all settings |
@@ -214,6 +215,25 @@ NoDonuts also tells you:
 
 All three happen just *before* the command runs, so a `reboot` or logout
 can't skip them.
+
+**Choosing what you get an alert for:** by default you get one for every
+run. To pick, run `nodonuts alerts` (while the watcher is stopped):
+
+```
+Alert me when my command runs because of:
+(Up/Down or 1-2 to move, Space to tick, Enter to save, q to cancel)
+
+> [x] Grace period: you were away for too long
+  [x] Stranger detected: someone else is at the laptop
+```
+
+Tick the grace period, the stranger, or both (or neither). A run you didn't
+tick still runs your command; it just leaves no file, no notification and no
+`status` line. A refused `nodonuts stop`, or a stop signal while you're
+away, always alerts: someone tried to stop NoDonuts.
+
+This isn't a `config` key: it's chosen only in this view. (Your choice is
+kept in the same file as your settings, but `config set` won't change it.)
 
 **Choosing the folder** (while the watcher is stopped, like any setting):
 

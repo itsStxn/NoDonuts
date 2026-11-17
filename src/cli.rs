@@ -35,6 +35,9 @@ pub enum Command {
     Refresh,
     /// Choose which camera to use, from the cameras connected now.
     Camera,
+    /// Choose what you get an alert for when your command runs: the grace
+    /// period, a stranger, or both.
+    Alerts,
     /// Set or change the fallback password, used by `stop` when your face
     /// isn't recognized.
     Password {
