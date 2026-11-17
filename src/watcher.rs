@@ -77,7 +77,8 @@ impl Watcher {
                 config.check_every_ms,
                 config.aggressive_mode,
                 config.aggressive_checks,
-            ),
+            )
+            .with_grace(config.grace_period),
             tracker: Tracker::new(),
             last_error: None,
         }
@@ -109,7 +110,7 @@ impl Watcher {
                 "someone else is at the laptop for {checks} checks in a row (aggressive mode)"
             );
         } else if next.state != self.tracker.state {
-            log::info!("{}", describe(next.state));
+            log::info!("{}", describe(next.state, self.rules.grace_enabled));
         }
         self.tracker = next;
         reason
@@ -511,10 +512,11 @@ fn empty_log_if_due(paths: &Paths, max_days: u64) {
     }
 }
 
-fn describe(state: State) -> &'static str {
+fn describe(state: State, grace_enabled: bool) -> &'static str {
     match state {
         State::Present => "owner is here",
-        State::Away { .. } => "owner not seen; grace period started",
+        State::Away { .. } if grace_enabled => "owner not seen; grace period started",
+        State::Away { .. } => "owner not seen (grace period is off)",
         State::Fired => "grace period over",
     }
 }
@@ -591,12 +593,19 @@ fn watch(paths: &Paths) -> Result<()> {
     } else {
         "off".to_string()
     };
+    let grace = if config.grace_period {
+        format!("{} s", config.grace_seconds)
+    } else {
+        "off".to_string()
+    };
     log::info!(
-        "watching (grace {} s, check every {} ms, aggressive mode {aggressive}, face checkout {})",
-        config.grace_seconds,
+        "watching (grace {grace}, check every {} ms, aggressive mode {aggressive}, face checkout {})",
         config.check_every_ms,
         if config.face_checkout { "on" } else { "off" },
     );
+    if let Some(warning) = config.warning() {
+        log::warn!("{warning}");
+    }
 
     // `nodonuts stop` talks to us over this socket. Without it, `stop` falls
     // back to a plain signal, so failing to set it up isn't fatal.
@@ -1010,6 +1019,62 @@ mod tests {
             first_fire_reason(&mut w, 20),
             Some(alert::Reason::Aggressive { checks: 2 })
         );
+    }
+
+    /// A watcher with the grace period off, aggressive mode on or off.
+    fn watcher_without_grace(script: Vec<Scene>, aggressive: bool) -> Watcher {
+        let shared = Rc::new(Cell::new(Empty));
+        let camera = ScriptedCamera {
+            script,
+            position: 0,
+            current: Rc::clone(&shared),
+        };
+        let config = Config {
+            grace_period: false,
+            grace_seconds: 3, // ignored
+            check_every_ms: 1000,
+            aggressive_mode: aggressive,
+            ..Config::default()
+        };
+        Watcher::new(
+            Box::new(camera),
+            Box::new(FakeFinder { current: shared }),
+            vec![unit_vector(0)],
+            &config,
+        )
+    }
+
+    #[test]
+    fn without_the_grace_period_leaving_never_runs_the_command() {
+        // Owner, then nobody for a long time (also with camera errors).
+        for scene in [Empty, CameraError] {
+            let mut w = watcher_without_grace(vec![Owner, scene], true);
+            assert!(run_seconds(&mut w, 60).is_empty(), "{scene:?}");
+        }
+    }
+
+    #[test]
+    fn without_the_grace_period_a_stranger_still_runs_it() {
+        // Owner at 0-1 s, then nobody, then a stranger from 10 s.
+        let mut script = vec![Owner, Owner];
+        script.extend(std::iter::repeat_n(Empty, 8));
+        script.push(Stranger);
+        let mut w = watcher_without_grace(script, true);
+        // Stranger checks at 10 s and 11 s: fires on the second (2 in a row).
+        assert_eq!(run_seconds(&mut w, 30), vec![11]);
+        assert_eq!(
+            first_fire_reason(&mut watcher_without_grace(vec![Owner, Stranger], true), 10),
+            Some(alert::Reason::Aggressive { checks: 2 })
+        );
+    }
+
+    #[test]
+    fn the_log_does_not_talk_about_a_grace_period_that_is_off() {
+        let away = State::Away {
+            since: SystemTime::UNIX_EPOCH,
+        };
+        assert!(describe(away, true).contains("grace period started"));
+        assert!(describe(away, false).contains("grace period is off"));
     }
 
     #[test]

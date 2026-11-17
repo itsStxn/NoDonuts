@@ -73,6 +73,11 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
             config.set(&key, &value)?;
             config::save(&paths.config_file, &config)?;
             println!("{key} = {}", config.get(&key)?);
+            if (key == "grace_period" || key == "aggressive_mode")
+                && let Some(warning) = config.warning()
+            {
+                eprintln!("warning: {warning}");
+            }
             if key == "autostart" {
                 apply_autostart(paths, config.autostart)?;
             }

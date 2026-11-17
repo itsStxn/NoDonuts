@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// The names accepted by `config get` and `config set`, alphabetically.
-pub const KEYS: [&str; 15] = [
+pub const KEYS: [&str; 16] = [
     "aggressive_checks",
     "aggressive_mode",
     "alert_location",
@@ -18,6 +18,7 @@ pub const KEYS: [&str; 15] = [
     "command_once",
     "face_checkout",
     "face_checks",
+    "grace_period",
     "grace_seconds",
     "logs_maxdays",
     "pwd_ms",
@@ -69,7 +70,13 @@ pub struct Config {
     /// `check_every_ms`, like `aggressive_checks`, so the wait is up to
     /// `face_checks x check_every_ms`. 1 to 10.
     pub face_checks: u64,
-    /// How long the owner may be away before the command runs.
+    /// If true, the command runs once the owner has been away for
+    /// `grace_seconds`. If false, being away never runs it and
+    /// `grace_seconds` does nothing: only aggressive mode (a stranger at the
+    /// laptop while the owner isn't) can run the command.
+    pub grace_period: bool,
+    /// How long the owner may be away before the command runs (when
+    /// `grace_period` is on).
     pub grace_seconds: u64,
     /// Empty the watcher's log once it's this many days old. 0 = never.
     pub logs_maxdays: u64,
@@ -110,6 +117,8 @@ impl Default for Config {
             face_checkout: true,
             // 2 frames, about 2 s at the default check_every_ms.
             face_checks: 2,
+            // On: the tool has always run the command after an absence.
+            grace_period: true,
             grace_seconds: 30,
             logs_maxdays: 7,
             // Enough for a short password typed from memory.
@@ -178,6 +187,7 @@ impl Config {
     /// Returns one setting as text.
     pub fn get(&self, key: &str) -> Result<String> {
         let value = match key {
+            "grace_period" => self.grace_period.to_string(),
             "grace_seconds" => self.grace_seconds.to_string(),
             "command" => self.command.clone(),
             "command_once" => self.command_once.to_string(),
@@ -204,6 +214,7 @@ impl Config {
         // Change a copy, so a bad value leaves `self` untouched.
         let mut updated = self.clone();
         match key {
+            "grace_period" => updated.grace_period = parse_on_off(key, value)?,
             "grace_seconds" => updated.grace_seconds = parse_whole_number(key, value)?,
             "command" => updated.command = value.to_string(),
             "command_once" => updated.command_once = parse_on_off(key, value)?,
@@ -249,6 +260,23 @@ impl Config {
         updated.validate()?;
         *self = updated;
         Ok(())
+    }
+
+    /// A warning when these settings mean the command can never run on its
+    /// own: with both the grace period and aggressive mode off, nothing
+    /// ever fires (only a refused `nodonuts stop` still does). Allowed,
+    /// since setting the two one at a time passes through it, but worth a
+    /// loud note.
+    pub fn warning(&self) -> Option<&'static str> {
+        if !self.grace_period && !self.aggressive_mode {
+            Some(
+                "grace_period and aggressive_mode are both off: your command will never \
+                 run when you leave or when someone else sits down (only a refused \
+                 `nodonuts stop` runs it). Turn one of them on.",
+            )
+        } else {
+            None
+        }
     }
 
     /// Parses TOML text and validates it.
@@ -326,6 +354,10 @@ mod tests {
     fn set_then_get_round_trips() {
         let mut config = Config::default();
         config.set("grace_seconds", "45").unwrap();
+        config.set("grace_period", "false").unwrap();
+        assert_eq!(config.get("grace_period").unwrap(), "false");
+        config.set("grace_period", "true").unwrap();
+        assert_eq!(config.get("grace_period").unwrap(), "true");
         config.set("command", "reboot").unwrap();
         config.set("threshold_owner", "0.5").unwrap();
         config.set("threshold_stranger", "0.3").unwrap();
@@ -420,6 +452,9 @@ mod tests {
     fn invalid_values_are_rejected_and_change_nothing() {
         let mut config = Config::default();
         for (key, bad) in [
+            ("grace_period", "yes"),
+            ("grace_period", "1"),
+            ("grace_period", ""),
             ("grace_seconds", "0"),
             ("grace_seconds", "-5"),
             ("grace_seconds", "1.5"),
@@ -482,12 +517,26 @@ mod tests {
         assert!(config.command_once);
         assert_eq!(config.aggressive_checks, 2);
         assert_eq!(config.pwd_ms, 3000);
+        // Older files keep behaving as before: the grace period is on.
+        assert!(config.grace_period);
         assert_eq!(config.alert_location, "desktop");
         // A hand-edited file with a relative path doesn't load.
         assert!(Config::from_toml("alert_location = 'alerts'").is_err());
         // A full path that doesn't exist (yet) does: the alert falls back.
         let config = Config::from_toml("alert_location = '/no/such/folder'").unwrap();
         assert_eq!(config.alert_location, "/no/such/folder");
+    }
+
+    #[test]
+    fn both_detectors_off_is_allowed_but_warned_about() {
+        let mut config = Config::default();
+        assert!(config.warning().is_none(), "defaults: grace on");
+        // Turning the grace period off alone leaves nothing that can fire.
+        config.set("grace_period", "false").unwrap();
+        assert!(config.warning().is_some());
+        // Aggressive mode on again makes it a valid "strangers only" setup.
+        config.set("aggressive_mode", "true").unwrap();
+        assert!(config.warning().is_none());
     }
 
     #[test]

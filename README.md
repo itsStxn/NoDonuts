@@ -74,7 +74,8 @@ Stored in `~/.config/nodonuts/config.toml` (Linux) or
 | `command_once` | `true` | `true` = after the command runs, NoDonuts stops and turns autostart off. **Pair it with a command that locks you out** (see [Run once](#run-once-command_once)) |
 | `face_checkout` | `true` | `true` = stopping the watcher needs your face; if you're not seen, the command runs first (see [Face checkout](#face-checkout)) |
 | `face_checks` | `2` | `nodonuts stop` asks for the fallback password if you're not recognized within this many camera frames (1 to 10). Like `aggressive_checks`, it's counted in checks of `check_every_ms`: the default is 2 x 1000 ms, about 2 s |
-| `grace_seconds` | `30` | How long you may be away before the command runs |
+| `grace_period` | `true` | `true` = the command runs once you've been away for `grace_seconds`. `false` = being away never runs it and `grace_seconds` does nothing; only aggressive mode can, i.e. the command runs only when someone else is at your laptop while you're not (see [Strangers only](#strangers-only-grace_period-false)) |
+| `grace_seconds` | `30` | How long you may be away before the command runs. Ignored when `grace_period` is `false` |
 | `logs_maxdays` | `7` | Empty the watcher's log once it's this many days old. `0` keeps it forever. The running watcher does this, checking at start and about once a minute |
 | `pwd_ms` | `3000` | How long `nodonuts stop` gives you to type the fallback password, in ms (1 to 60000). Too slow counts as a wrong password. **Keep it small, and your password short enough to type in that time** (see [The password time limit](#the-password-time-limit-pwd_ms)) |
 | `threshold_owner` | `0.36` | Minimum similarity (0 to 1) a face needs to count as yours. **Higher is stricter:** closer to 1, strangers are rejected more reliably but your own face is missed more often (bad angle or light). Closer to 0, almost any face passes as you. Called `match_threshold` before; old config files still load |
@@ -249,7 +250,8 @@ nodonuts config set alert_location off                 # no file, no notificatio
   watching and re-arms when you're seen again.
 - A covered camera, a dark room, a camera error, or a camera in use by
   another app all count as "not seen", so the command fires. This is
-  deliberate: it fails toward locking.
+  deliberate: it fails toward locking. (Not with `grace_period false`: then
+  "not seen" never fires it, only a clear stranger does.)
 - The detector needs a roughly front-facing face. Turning fully sideways or
   sitting with strong light behind you counts as "not seen". Brief turns are
   covered by the grace period.
@@ -263,15 +265,40 @@ nodonuts config set alert_location off                 # no file, no notificatio
     empty frame, a camera error, or the laptop sleeping in between.
   - If you and someone else are both in view, nothing happens. Camera errors
     never count as a stranger.
-  - The grace period keeps running alongside. Whichever finishes first runs
-    the command, and the other is cancelled: the command runs once per
-    absence either way.
+  - The grace period keeps running alongside (unless `grace_period` is
+    `false`). Whichever finishes first runs the command, and the other is
+    cancelled: the command runs once per absence either way.
   - Only clear strangers count. Your own face at a sharp angle or in poor
     light scores lower than usual, but usually still above
     `threshold_stranger`, so it counts as "unsure", not a stranger, and
     doesn't trigger aggressive mode. `aggressive_checks` guards against the
     rest: `1` fires on a single misread frame, so keep it at 2 or more, and
     higher for destructive commands like `reboot`.
+
+### Strangers only (`grace_period false`)
+
+By default, the command runs when you've been away for `grace_seconds`. If
+you only care about someone else using your laptop, turn that off:
+
+```bash
+nodonuts config set grace_period false
+nodonuts config set aggressive_mode true
+```
+
+Now walking away, a covered camera or a camera error never runs the command.
+It runs only when another face is in view and yours isn't, for
+`aggressive_checks` checks in a row (about 2 s at the defaults). `grace_seconds`
+does nothing.
+
+- **Turn `aggressive_mode` on too.** With both off, nothing can run your
+  command on its own (only a refused `nodonuts stop` still does).
+  `config set` and `start` warn you about it.
+- **Fewer cases are caught.** Someone who covers the camera, or whose face
+  the camera can't make out (side-on, in the dark), isn't a clear stranger,
+  so nothing runs. The grace period is the safety net for those cases, so
+  leave it on unless this is what you want.
+- `command_once`, the alert, face checkout and sleep/wake handling work the
+  same either way.
 
 ### How a face is classified
 
@@ -281,7 +308,7 @@ face, from 0 (nothing alike) to 1 (identical):
 | Score | Counts as | Effect |
 |---|---|---|
 | `threshold_owner` (0.36) or more | **you** | you're present |
-| between the two | **unsure** | not you (the grace period runs), but not a stranger either (no aggressive mode) |
+| between the two | **unsure** | not you (the grace period runs, if on), but not a stranger either (no aggressive mode) |
 | below `threshold_stranger` (0.2) | **stranger** | counts toward aggressive mode |
 
 `threshold_stranger` can't be higher than `threshold_owner`. Set them equal

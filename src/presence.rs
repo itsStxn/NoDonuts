@@ -85,6 +85,9 @@ impl Default for Tracker {
 pub struct Rules {
     /// How long the owner may be away before the command runs.
     pub grace: Duration,
+    /// `grace_period`: if false, being away never runs the command, however
+    /// long (`grace` is ignored). Only aggressive mode can fire then.
+    pub grace_enabled: bool,
     /// A gap between checks longer than this means the laptop was asleep.
     pub wake_gap: Duration,
     /// Aggressive mode: a stranger without the owner fires without waiting
@@ -106,10 +109,19 @@ impl Rules {
     ) -> Rules {
         Rules {
             grace: Duration::from_secs(grace_seconds),
+            // On, as it always was; `with_grace` turns it off.
+            grace_enabled: true,
             wake_gap: Duration::from_millis(check_every_ms.saturating_mul(5)),
             aggressive,
             aggressive_checks,
         }
+    }
+
+    /// The same rules with the grace period switched on or off
+    /// (`grace_period`).
+    pub fn with_grace(mut self, enabled: bool) -> Rules {
+        self.grace_enabled = enabled;
+        self
     }
 
     /// True if this sighting counts toward the stranger streak: aggressive
@@ -155,7 +167,8 @@ pub fn next(current: Tracker, seen: Sighting, now: SystemTime, rules: &Rules) ->
     // 3. The transitions. Arms are tried top to bottom; the first match wins.
     //    The grace period and aggressive mode race: whichever fires first
     //    moves to `Fired`, and `Fired` never fires again, so the other one
-    //    is cancelled.
+    //    is cancelled. (With `grace_period` off there's no race: only
+    //    aggressive mode can fire.)
     let (state, fire) = match state {
         // The owner is here: always back to Present (this re-arms).
         _ if seen.owner => (State::Present, false),
@@ -169,7 +182,9 @@ pub fn next(current: Tracker, seen: Sighting, now: SystemTime, rules: &Rules) ->
             // `duration_since` fails if `since` is in the future. That
             // cannot happen after step 1, but treat it as "no time passed".
             let away_for = now.duration_since(since).unwrap_or(Duration::ZERO);
-            if away_for >= rules.grace {
+            // With the grace period off, being away is never enough: the
+            // owner stays `Away` until seen again or aggressive mode fires.
+            if rules.grace_enabled && away_for >= rules.grace {
                 (State::Fired, true)
             } else {
                 (State::Away { since }, false)
@@ -277,6 +292,55 @@ mod tests {
         sim.run_for(5, true);
         assert_eq!(sim.fired, 0);
         assert_eq!(sim.tracker.state, State::Present);
+    }
+
+    #[test]
+    fn without_the_grace_period_being_away_never_fires() {
+        let rules = Rules::new(GRACE_S, CHECK_MS, false, 1).with_grace(false);
+        let mut sim = Sim::with_rules(rules);
+        sim.run_for(5, true);
+        // Far longer than the grace period would allow.
+        sim.run_for(GRACE_S * 10, false);
+        assert_eq!(sim.fired, 0);
+        assert!(matches!(sim.tracker.state, State::Away { .. }));
+        // A stranger doesn't fire it either: aggressive mode is off.
+        sim.step(Sighting::STRANGER);
+        sim.step(Sighting::STRANGER);
+        assert_eq!(sim.fired, 0);
+        // The owner coming back is still just "present".
+        sim.run_for(1, true);
+        assert_eq!(sim.tracker.state, State::Present);
+    }
+
+    #[test]
+    fn without_the_grace_period_aggressive_mode_still_fires() {
+        let rules = Rules::new(GRACE_S, CHECK_MS, true, 2).with_grace(false);
+        let mut sim = Sim::with_rules(rules);
+        sim.run_for(5, true);
+        // The owner leaves for a long time: nothing happens.
+        sim.run_for(GRACE_S * 4, false);
+        assert_eq!(sim.fired, 0);
+        // A stranger sits down: fires after 2 checks in a row, once.
+        sim.step(Sighting::STRANGER);
+        assert_eq!(sim.fired, 0);
+        sim.step(Sighting::STRANGER);
+        assert_eq!(sim.fired, 1);
+        sim.step(Sighting::STRANGER);
+        assert_eq!(sim.fired, 1, "no repeat while the same absence goes on");
+        assert_eq!(sim.tracker.state, State::Fired);
+        // The owner returns: re-armed, and a new stranger fires again.
+        sim.run_for(1, true);
+        sim.step(Sighting::STRANGER);
+        sim.step(Sighting::STRANGER);
+        assert_eq!(sim.fired, 2);
+    }
+
+    #[test]
+    fn grace_period_is_on_unless_switched_off() {
+        assert!(Rules::new(GRACE_S, CHECK_MS, false, 1).grace_enabled);
+        let mut sim = Sim::new();
+        sim.run_for(GRACE_S * 4, false);
+        assert_eq!(sim.fired, 1);
     }
 
     #[test]

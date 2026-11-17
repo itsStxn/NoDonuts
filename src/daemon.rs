@@ -43,6 +43,9 @@ pub fn start(paths: &Paths) -> Result<()> {
     enroll::load(&paths.face_file)?;
     let config = config::load(&paths.config_file)?;
     files::create_parent_dir(&paths.log_file)?;
+    if let Some(warning) = config.warning() {
+        eprintln!("warning: {warning}");
+    }
     // Check the login entry, but never change it here: `start` is also run
     // from test copies (e.g. `build/bin/`), and rewriting the entry would
     // quietly point autostart at them. Only `config set autostart` and
