@@ -37,8 +37,8 @@ pub enum Reason {
         /// `grace_seconds`.
         seconds: u64,
     },
-    /// Aggressive mode: someone else was in view for enough checks.
-    Aggressive {
+    /// Stranger mode: someone else was in view for enough checks.
+    Stranger {
         /// How many checks in a row.
         checks: u64,
     },
@@ -55,8 +55,8 @@ impl Reason {
             Reason::GracePeriod { seconds } => {
                 format!("you were away for longer than the grace period ({seconds} s)")
             }
-            Reason::Aggressive { checks } => format!(
-                "someone else was at the laptop for {checks} checks in a row (aggressive mode)"
+            Reason::Stranger { checks } => format!(
+                "someone else was at the laptop for {checks} checks in a row (stranger mode)"
             ),
             Reason::StopRefused => "someone ran `nodonuts stop`, but your face wasn't recognized \
                                     and the fallback password wasn't given"
@@ -71,7 +71,7 @@ impl Reason {
     pub fn short(self) -> &'static str {
         match self {
             Reason::GracePeriod { .. } => "grace period over",
-            Reason::Aggressive { .. } => "aggressive mode",
+            Reason::Stranger { .. } => "stranger mode",
             Reason::StopRefused => "stop refused",
             Reason::StopSignal => "stop signal while away",
         }
@@ -367,13 +367,13 @@ mod tests {
     fn the_entry_says_when_why_what_and_where() {
         let text = entry_text(
             "2026-11-03 14:32:07",
-            Reason::Aggressive { checks: 2 },
+            Reason::Stranger { checks: 2 },
             "loginctl lock-session",
             Afterwards::StopsOnce,
             Path::new("/home/me/nodonuts.log"),
         );
         assert!(text.contains("2026-11-03 14:32:07"));
-        assert!(text.contains("2 checks in a row (aggressive mode)"));
+        assert!(text.contains("2 checks in a row (stranger mode)"));
         assert!(text.contains("loginctl lock-session"));
         assert!(text.contains("turned autostart off"));
         assert!(text.contains("/home/me/nodonuts.log"));

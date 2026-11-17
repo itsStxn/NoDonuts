@@ -11,6 +11,7 @@ use crate::enroll;
 use crate::face::{self, Embedding, FaceFinder, OnnxFaceFinder};
 use crate::files::{self, Paths};
 use crate::logs;
+use crate::oslock;
 use crate::password;
 use crate::presence::{self, Rules, Sighting, State, Tracker};
 use crate::runner;
@@ -73,11 +74,12 @@ impl Watcher {
             threshold_owner: config.threshold_owner,
             threshold_stranger: config.threshold_stranger,
             rules: Rules::new(
-                config.grace_seconds,
+                config.grace_seconds.seconds(),
                 config.check_every_ms,
-                config.aggressive_mode,
-                config.aggressive_checks,
-            ),
+                config.stranger_mode,
+                config.stranger_checks,
+            )
+            .with_grace(config.grace_period),
             tracker: Tracker::new(),
             last_error: None,
         }
@@ -96,7 +98,7 @@ impl Watcher {
         let reason = if !fire {
             None
         } else if self.rules.intrusion_confirmed(seen, next.stranger_streak) {
-            Some(alert::Reason::Aggressive {
+            Some(alert::Reason::Stranger {
                 checks: next.stranger_streak,
             })
         } else {
@@ -104,12 +106,12 @@ impl Watcher {
                 seconds: self.rules.grace.as_secs(),
             })
         };
-        if let Some(alert::Reason::Aggressive { checks }) = reason {
+        if let Some(alert::Reason::Stranger { checks }) = reason {
             log::info!(
-                "someone else is at the laptop for {checks} checks in a row (aggressive mode)"
+                "someone else is at the laptop for {checks} checks in a row (stranger mode)"
             );
         } else if next.state != self.tracker.state {
-            log::info!("{}", describe(next.state));
+            log::info!("{}", describe(next.state, self.rules.grace_enabled));
         }
         self.tracker = next;
         reason
@@ -125,7 +127,7 @@ impl Watcher {
     /// Grabs a frame and checks who is in it. Any problem (camera error,
     /// even a panic inside a library) counts as "nobody seen": the grace
     /// period then runs out, failing toward running the command. It never
-    /// counts as a stranger, so a broken camera cannot trigger aggressive
+    /// counts as a stranger, so a broken camera cannot trigger stranger
     /// mode.
     fn look(&mut self) -> Sighting {
         // `catch_unwind` turns a panic (a crash inside a library) into an
@@ -220,7 +222,7 @@ impl Watcher {
             return Some(StopOutcome::Unchecked);
         }
 
-        // One frame per check, like `aggressive_checks`: `face_checks = 3`
+        // One frame per check, like `stranger_checks`: `face_checks = 3`
         // means "not recognized within 3 frames: ask for the password".
         for attempt in 1..=rules.face_checks {
             if attempt > 1 {
@@ -389,7 +391,7 @@ impl StopRules {
             // safe if it ever could.
             face_checks: u32::try_from(config.face_checks).unwrap_or(10),
             // Frames are paced like the watch loop's checks, so the wait is
-            // `face_checks x check_every_ms`, as for `aggressive_checks`.
+            // `face_checks x check_every_ms`, as for `stranger_checks`.
             frame_pause: Duration::from_millis(config.check_every_ms),
             signal_looks: SIGNAL_CHECKOUT_LOOKS,
             signal_pause: SIGNAL_CHECKOUT_PAUSE,
@@ -511,10 +513,11 @@ fn empty_log_if_due(paths: &Paths, max_days: u64) {
     }
 }
 
-fn describe(state: State) -> &'static str {
+fn describe(state: State, grace_enabled: bool) -> &'static str {
     match state {
         State::Present => "owner is here",
-        State::Away { .. } => "owner not seen; grace period started",
+        State::Away { .. } if grace_enabled => "owner not seen; grace period started",
+        State::Away { .. } => "owner not seen (grace period is off)",
         State::Fired => "grace period over",
     }
 }
@@ -561,7 +564,12 @@ pub const ALREADY_RUNNING_EXIT_CODE: i32 = 3;
 fn watch(paths: &Paths) -> Result<()> {
     // Settings are read once: a running watcher keeps the settings it
     // started with.
-    let config = config::load(&paths.config_file)?;
+    let mut config = config::load(&paths.config_file)?;
+    // `grace_seconds = os`: ask the system now, here in the owner's session
+    // (the desktop settings only exist there), and keep that number.
+    if let Some(decision) = config.resolve_grace(oslock::lock_after_seconds) {
+        log::info!("{decision}");
+    }
     let owner = enroll::load(&paths.face_file)?;
     if owner.len() == 1 {
         // A face enrolled before guided poses: works, but turned heads match
@@ -586,17 +594,24 @@ fn watch(paths: &Paths) -> Result<()> {
     let webcam = Webcam::new(&config.camera);
     let mut watcher = Watcher::new(Box::new(webcam), Box::new(finder), owner, &config);
     let interval = Duration::from_millis(config.check_every_ms);
-    let aggressive = if config.aggressive_mode {
-        format!("on, {} checks", config.aggressive_checks)
+    let stranger_mode = if config.stranger_mode {
+        format!("on, {} checks", config.stranger_checks)
+    } else {
+        "off".to_string()
+    };
+    let grace = if config.grace_period {
+        format!("{} s", config.grace_seconds.seconds())
     } else {
         "off".to_string()
     };
     log::info!(
-        "watching (grace {} s, check every {} ms, aggressive mode {aggressive}, face checkout {})",
-        config.grace_seconds,
+        "watching (grace {grace}, check every {} ms, stranger mode {stranger_mode}, face checkout {})",
         config.check_every_ms,
         if config.face_checkout { "on" } else { "off" },
     );
+    if let Some(warning) = config.warning() {
+        log::warn!("{warning}");
+    }
 
     // `nodonuts stop` talks to us over this socket. Without it, `stop` falls
     // back to a plain signal, so failing to set it up isn't fatal.
@@ -883,7 +898,7 @@ mod tests {
         e
     }
 
-    fn watcher(script: Vec<Scene>, grace_seconds: u64, aggressive: bool) -> Watcher {
+    fn watcher(script: Vec<Scene>, grace_seconds: u64, stranger_mode: bool) -> Watcher {
         let shared = Rc::new(Cell::new(Empty));
         let camera = ScriptedCamera {
             script,
@@ -892,9 +907,9 @@ mod tests {
         };
         let finder = FakeFinder { current: shared };
         let config = Config {
-            grace_seconds,
+            grace_seconds: grace_seconds.into(),
             check_every_ms: 1000,
-            aggressive_mode: aggressive,
+            stranger_mode,
             // `..` fills the remaining fields from the defaults.
             ..Config::default()
         };
@@ -967,7 +982,7 @@ mod tests {
             current: Rc::new(Cell::new(Empty)),
         };
         let config = Config {
-            grace_seconds: 1,
+            grace_seconds: 1.into(),
             check_every_ms: 1000,
             ..Config::default()
         };
@@ -981,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn aggressive_mode_fires_after_the_default_two_stranger_checks() {
+    fn stranger_mode_fires_after_the_default_two_stranger_checks() {
         // Stranger from 2 s: 1st check at 2 s, 2nd (confirming) at 3 s.
         let mut w = watcher(vec![Owner, Owner, Stranger], 30, true);
         assert_eq!(run_seconds(&mut w, 10), vec![3]);
@@ -1008,8 +1023,64 @@ mod tests {
         let mut w = watcher(vec![Owner, Stranger], 30, true);
         assert_eq!(
             first_fire_reason(&mut w, 20),
-            Some(alert::Reason::Aggressive { checks: 2 })
+            Some(alert::Reason::Stranger { checks: 2 })
         );
+    }
+
+    /// A watcher with the grace period off, stranger mode on or off.
+    fn watcher_without_grace(script: Vec<Scene>, stranger_mode: bool) -> Watcher {
+        let shared = Rc::new(Cell::new(Empty));
+        let camera = ScriptedCamera {
+            script,
+            position: 0,
+            current: Rc::clone(&shared),
+        };
+        let config = Config {
+            grace_period: false,
+            grace_seconds: 3.into(), // ignored
+            check_every_ms: 1000,
+            stranger_mode,
+            ..Config::default()
+        };
+        Watcher::new(
+            Box::new(camera),
+            Box::new(FakeFinder { current: shared }),
+            vec![unit_vector(0)],
+            &config,
+        )
+    }
+
+    #[test]
+    fn without_the_grace_period_leaving_never_runs_the_command() {
+        // Owner, then nobody for a long time (also with camera errors).
+        for scene in [Empty, CameraError] {
+            let mut w = watcher_without_grace(vec![Owner, scene], true);
+            assert!(run_seconds(&mut w, 60).is_empty(), "{scene:?}");
+        }
+    }
+
+    #[test]
+    fn without_the_grace_period_a_stranger_still_runs_it() {
+        // Owner at 0-1 s, then nobody, then a stranger from 10 s.
+        let mut script = vec![Owner, Owner];
+        script.extend(std::iter::repeat_n(Empty, 8));
+        script.push(Stranger);
+        let mut w = watcher_without_grace(script, true);
+        // Stranger checks at 10 s and 11 s: fires on the second (2 in a row).
+        assert_eq!(run_seconds(&mut w, 30), vec![11]);
+        assert_eq!(
+            first_fire_reason(&mut watcher_without_grace(vec![Owner, Stranger], true), 10),
+            Some(alert::Reason::Stranger { checks: 2 })
+        );
+    }
+
+    #[test]
+    fn the_log_does_not_talk_about_a_grace_period_that_is_off() {
+        let away = State::Away {
+            since: SystemTime::UNIX_EPOCH,
+        };
+        assert!(describe(away, true).contains("grace period started"));
+        assert!(describe(away, false).contains("grace period is off"));
     }
 
     #[test]
@@ -1032,20 +1103,20 @@ mod tests {
     }
 
     #[test]
-    fn aggressive_mode_ignores_a_single_misread_frame() {
+    fn stranger_mode_ignores_a_single_misread_frame() {
         let mut w = watcher(vec![Owner, Stranger, Owner], 30, true);
         assert!(run_seconds(&mut w, 10).is_empty());
         assert_eq!(w.state(), State::Present);
     }
 
     #[test]
-    fn aggressive_mode_ignores_strangers_next_to_the_owner() {
+    fn stranger_mode_ignores_strangers_next_to_the_owner() {
         let mut w = watcher(vec![OwnerAndStranger], 3, true);
         assert!(run_seconds(&mut w, 20).is_empty());
     }
 
     #[test]
-    fn aggressive_mode_never_treats_camera_errors_as_strangers() {
+    fn stranger_mode_never_treats_camera_errors_as_strangers() {
         // Errors still fire, but only after the normal grace period.
         let mut w = watcher(vec![Owner, CameraError], 3, true);
         assert_eq!(run_seconds(&mut w, 20), vec![4]);
@@ -1507,7 +1578,7 @@ mod tests {
         let paths = Paths::in_dir(&dir);
         let settings = Config {
             autostart: true,
-            grace_seconds: 45,
+            grace_seconds: 45.into(),
             ..Config::default()
         };
         config::save(&paths.config_file, &settings).unwrap();
@@ -1518,7 +1589,7 @@ mod tests {
 
         let after = config::load(&paths.config_file).unwrap();
         assert!(!after.autostart, "setting off");
-        assert_eq!(after.grace_seconds, 45, "nothing else changed");
+        assert_eq!(after.grace_seconds, 45.into(), "nothing else changed");
         assert!(!autostart::is_enabled(&paths), "login entry removed");
         // Harmless when already off.
         turn_autostart_off(&paths);
@@ -1546,8 +1617,8 @@ mod tests {
     }
 
     #[test]
-    fn an_unsure_face_does_not_trigger_aggressive_mode() {
-        // Owner, then an unsure face (e.g. head turned): no aggressive fire,
+    fn an_unsure_face_does_not_trigger_stranger_mode() {
+        // Owner, then an unsure face (e.g. head turned): no stranger-mode fire,
         // only the normal grace period (3 s here).
         let mut w = watcher(vec![Owner, Unsure], 3, true);
         assert_eq!(run_seconds(&mut w, 20), vec![4]);
@@ -1555,7 +1626,7 @@ mod tests {
 
     #[test]
     fn an_unsure_face_does_not_count_as_the_owner_either() {
-        // Without aggressive mode: the grace period runs out as usual.
+        // Without stranger mode: the grace period runs out as usual.
         let mut w = watcher(vec![Owner, Unsure], 3, false);
         assert_eq!(run_seconds(&mut w, 20), vec![4]);
         assert!(!w.look().owner);
@@ -1571,9 +1642,9 @@ mod tests {
             current: Rc::clone(&shared),
         };
         let config = Config {
-            grace_seconds: 30,
+            grace_seconds: 30.into(),
             check_every_ms: 1000,
-            aggressive_mode: true,
+            stranger_mode: true,
             threshold_stranger: 0.36,
             ..Config::default()
         };
@@ -1583,12 +1654,12 @@ mod tests {
             vec![unit_vector(0)],
             &config,
         );
-        // Unsure face from 2 s: aggressive fires after 2 checks, at 3 s.
+        // Unsure face from 2 s: stranger mode fires after 2 checks, at 3 s.
         assert_eq!(run_seconds(&mut w, 10), vec![3]);
     }
 
     #[test]
-    fn strangers_wait_for_the_grace_period_when_aggressive_mode_is_off() {
+    fn strangers_wait_for_the_grace_period_when_stranger_mode_is_off() {
         let mut w = watcher(vec![Owner, Stranger], 3, false);
         assert_eq!(run_seconds(&mut w, 20), vec![4]);
     }

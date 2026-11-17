@@ -4,7 +4,7 @@
 use amzn_no_donuts::cli::{Cli, Command, ConfigAction};
 use amzn_no_donuts::config::{self, Config};
 use amzn_no_donuts::files::Paths;
-use amzn_no_donuts::{autostart, camera, daemon, enroll, password, prompt, watcher};
+use amzn_no_donuts::{autostart, camera, daemon, enroll, oslock, password, prompt, watcher};
 use anyhow::{Result, bail};
 use clap::Parser;
 use std::io::{BufRead, IsTerminal, Write};
@@ -62,10 +62,19 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
             let config = config::load(&paths.config_file)?;
             println!("# {}", paths.config_file.display());
             print!("{}", config.to_toml()?);
+            if let Some(note) = os_grace_note(&config) {
+                println!("# {note}");
+            }
         }
         ConfigAction::Get { key } => {
             let config = config::load(&paths.config_file)?;
             println!("{}", config.get(&key)?);
+            // On stderr, so scripts reading the value still get just `os`.
+            if key == "grace_seconds"
+                && let Some(note) = os_grace_note(&config)
+            {
+                eprintln!("{note}");
+            }
         }
         ConfigAction::Set { key, value } => {
             refuse_while_running(paths, "settings")?;
@@ -73,6 +82,16 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
             config.set(&key, &value)?;
             config::save(&paths.config_file, &config)?;
             println!("{key} = {}", config.get(&key)?);
+            if key == "grace_seconds"
+                && let Some(note) = os_grace_note(&config)
+            {
+                println!("{note}");
+            }
+            if (key == "grace_period" || key == "stranger_mode")
+                && let Some(warning) = config.warning()
+            {
+                eprintln!("warning: {warning}");
+            }
             if key == "autostart" {
                 apply_autostart(paths, config.autostart)?;
             }
@@ -85,6 +104,13 @@ fn run_config(paths: &Paths, action: ConfigAction) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// For `grace_seconds = os`: what that means on this computer right now
+/// (the watcher asks again each time it starts). `None` for a number.
+fn os_grace_note(config: &Config) -> Option<String> {
+    // Resolve a copy: the saved setting stays `os`.
+    config.clone().resolve_grace(oslock::lock_after_seconds)
 }
 
 /// `nodonuts camera`: list the usable cameras and let the owner pick one.
